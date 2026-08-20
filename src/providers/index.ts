@@ -4,7 +4,7 @@ import type { LanguageModel } from "ai"
 import type { HaxfordConfig } from "../types/config.ts"
 
 /** Used when neither config nor HAXFORD_MODEL specifies a model. */
-export const DEFAULT_MODEL_SPEC = "anthropic/claude-sonnet-4-20250514"
+export const DEFAULT_MODEL_SPEC = "anthropic/claude-sonnet-5"
 
 interface ProviderSettings {
   apiKey: string

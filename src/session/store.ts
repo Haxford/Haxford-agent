@@ -1,3 +1,4 @@
+import { appendFile } from "node:fs/promises"
 import { readdirSync } from "node:fs"
 import path from "node:path"
 
@@ -20,17 +21,16 @@ function toLine(value: unknown): string {
   return JSON.stringify(value)
 }
 
-// Appends are serialized per-file via a promise queue to avoid lost writes when
-// the read-modify-write pattern interleaves. Bun.write to a path overwrites, so
-// we read existing contents, concatenate, and write back.
+// Appends are serialized per-file via a promise queue to guarantee ordering
+// across rapid concurrent appends. Each append is a single O(1) `appendFile`
+// call rather than a read-modify-write of the whole transcript.
 const appendQueues = new Map<string, Promise<void>>()
 
 function queuedAppend(file: string, value: unknown): Promise<void> {
   const prev = appendQueues.get(file) ?? Promise.resolve()
   const next = prev.then(async () => {
-    const existing = await Bun.file(file).text().catch(() => "")
     const line = toLine(value) + "\n"
-    await Bun.write(file, existing + line)
+    await appendFile(file, line, "utf8")
   })
   appendQueues.set(file, next.catch(() => {}))
   return next
