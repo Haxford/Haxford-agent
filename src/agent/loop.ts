@@ -10,6 +10,7 @@ import type { AgentEvent, LoopEndReason } from "../types/events.ts"
 import type {
   Message,
   Part,
+  ReasoningPart,
   TextPart,
   TokenUsage,
   ToolPart,
@@ -225,6 +226,15 @@ export type ToolContextWithSubagent = ToolContext & {
 /* Compaction                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Stable id for a session's compaction summary message. Deterministic so a
+ * store that dedupes by id keeps only the newest summary — each one already
+ * subsumes the previous.
+ */
+export function compactionMessageID(sessionID: string): string {
+  return `compaction-${sessionID}`
+}
+
 /** The most recent real input-token count, if any turn has reported one. */
 function latestUsageInput(history: Message[]): number | undefined {
   for (let i = history.length - 1; i >= 0; i--) {
@@ -361,12 +371,15 @@ export async function* runAgentLoop(
       }
 
       const synthetic: Message = {
-        id: crypto.randomUUID(),
+        // Deterministic id: a later compaction in the same session replaces
+        // this message rather than stacking another summary beside it, in any
+        // store that dedupes by message id.
+        id: compactionMessageID(sessionID),
         sessionID,
         role: "user",
         parts: [
           {
-            id: crypto.randomUUID(),
+            id: `${compactionMessageID(sessionID)}-text`,
             type: "text",
             text: `${COMPACTION_MARKER}\n\n${summary}`,
           },
@@ -378,6 +391,18 @@ export async function* runAgentLoop(
       conversation.push(synthetic, ...tail)
       // Re-baseline so the next turn does not immediately re-compact.
       lastInput = estimateTokens(toModelMessages(conversation))
+
+      // Emit the summary so the host can persist it. Without this the summary
+      // lives only in this loop's local copy and the next prompt re-compacts
+      // from scratch, paying for another summarization every turn.
+      //
+      // HOST CONTRACT: on seeing a message whose text starts with
+      // COMPACTION_MARKER, persist it AND stop replaying the messages it
+      // summarizes — otherwise a resumed session reloads the full
+      // pre-compaction history plus the summary and nothing is saved. The
+      // frozen Part/Message contract has no field to mark this structurally,
+      // so the marker text and the stable id are the only signals available.
+      yield { type: "message.updated", message: { ...synthetic, parts: [...synthetic.parts] } }
 
       yield {
         type: "notice",
@@ -432,12 +457,25 @@ export async function* runAgentLoop(
     yield { type: "message.updated", message: snapshot() }
 
     const openText = new Map<string, TextPart>()
+    const openReasoning = new Map<string, ReasoningPart>()
     const openTool = new Map<string, ToolPart>()
     const openText_ = (streamID: string): TextPart => {
       const existing = openText.get(streamID)
       if (existing) return existing
       const part: TextPart = { id: crypto.randomUUID(), type: "text", text: "" }
       openText.set(streamID, part)
+      message.parts.push(part)
+      return part
+    }
+    const openReasoning_ = (streamID: string): ReasoningPart => {
+      const existing = openReasoning.get(streamID)
+      if (existing) return existing
+      const part: ReasoningPart = {
+        id: crypto.randomUUID(),
+        type: "reasoning",
+        text: "",
+      }
+      openReasoning.set(streamID, part)
       message.parts.push(part)
       return part
     }
@@ -494,6 +532,33 @@ export async function* runAgentLoop(
             const part = openText.get(chunk.id)
             if (part) {
               openText.delete(chunk.id)
+              yield partEvent(part)
+            }
+            break
+          }
+
+          // Reasoning mirrors the text lifecycle so thinking-capable models
+          // stream into a ReasoningPart the TUI can render distinctly.
+          case "reasoning-start": {
+            openReasoning_(chunk.id)
+            break
+          }
+          case "reasoning-delta": {
+            if (!chunk.text) break
+            const part = openReasoning_(chunk.id)
+            part.text += chunk.text
+            yield {
+              type: "part.delta",
+              messageID: message.id,
+              partID: part.id,
+              delta: chunk.text,
+            }
+            break
+          }
+          case "reasoning-end": {
+            const part = openReasoning.get(chunk.id)
+            if (part) {
+              openReasoning.delete(chunk.id)
               yield partEvent(part)
             }
             break
@@ -558,6 +623,29 @@ export async function* runAgentLoop(
 
           case "finish": {
             usage = toTokenUsage(chunk.totalUsage)
+            // A provider can report failure purely through finishReason,
+            // with no preceding error chunk. Without this the turn would be
+            // reported as a normal end_turn and the failure swallowed.
+            if (chunk.finishReason === "error") {
+              message.error =
+                message.error ??
+                "The model stream finished with an error (finishReason: error) " +
+                  "and no further detail from the provider."
+              outcome = "error"
+            } else if (
+              chunk.finishReason === "unknown" &&
+              message.parts.length === 0
+            ) {
+              // A connection reset mid-stream surfaces as finishReason
+              // "unknown" with no error chunk and nothing decoded. Reporting
+              // end_turn there would show an empty assistant reply as success.
+              // Only treat it as failure when nothing at all was produced —
+              // "unknown" with real content is a truncated but usable turn.
+              message.error =
+                "The model stream ended before returning any content " +
+                "(the connection was likely interrupted)."
+              outcome = "error"
+            }
             break
           }
           case "abort": {
@@ -565,6 +653,12 @@ export async function* runAgentLoop(
             break
           }
           case "error": {
+            // An abort surfaces here as an AbortError on some providers;
+            // reporting it as a loop error would misattribute a user action.
+            if (isAbort(chunk.error, abort)) {
+              outcome = "aborted"
+              break
+            }
             message.error = errorMessage(chunk.error)
             outcome = "error"
             break
@@ -585,6 +679,26 @@ export async function* runAgentLoop(
     // Flush anything the provider left open (error or abort mid-stream).
     for (const part of openText.values()) yield partEvent(part)
     openText.clear()
+    for (const part of openReasoning.values()) yield partEvent(part)
+    openReasoning.clear()
+
+    // A tool call that never produced a result would otherwise stay pending or
+    // running forever — a stuck spinner in the UI, and an unsettled part that
+    // history conversion has to drop. Settle each one as an error instead.
+    for (const [callID, part] of openTool) {
+      const start = startedAt.get(callID) ?? Date.now()
+      part.state = {
+        status: "error",
+        input:
+          part.state.status === "running" ? part.state.input : {},
+        error:
+          outcome === "aborted"
+            ? "Aborted before the tool call completed."
+            : `Tool call did not complete: ${message.error ?? "stream error"}`,
+        time: { start, end: Date.now() },
+      }
+      yield partEvent(part)
+    }
     openTool.clear()
 
     if (usage) {

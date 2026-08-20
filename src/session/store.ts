@@ -78,22 +78,33 @@ export async function appendMessage(
   const file = sessionFile(directory, sessionID)
   ensureDir(sessionsDir(directory))
   await queuedAppend(file, message)
-  // Bump session updated time.
-  const existing = await getSession(directory, sessionID)
-  if (existing !== undefined) {
-    existing.time.updated = now()
-    await writeMeta(directory, existing)
+  // Best-effort: bump the session's updated time. A failure here (e.g. a
+  // corrupt or missing meta) must not poison a successful transcript write.
+  try {
+    const existing = await getSession(directory, sessionID)
+    if (existing !== undefined) {
+      existing.time.updated = now()
+      await writeMeta(directory, existing)
+    }
+  } catch {
+    // ignore — the message is already persisted.
   }
 }
 
-/** Read a session's metadata, or undefined if it does not exist. */
+/** Read a session's metadata, or undefined if it does not exist or is corrupt. */
 export async function getSession(
   directory: string,
   sessionID: string,
 ): Promise<SessionInfo | undefined> {
   const file = Bun.file(sessionMetaFile(directory, sessionID))
   if (!(await file.exists())) return undefined
-  return (await file.json()) as SessionInfo
+  try {
+    return (await file.json()) as SessionInfo
+  } catch {
+    // Corrupt meta — treat as absent so callers (appendMessage, fork) skip it
+    // rather than throwing after a transcript write already succeeded.
+    return undefined
+  }
 }
 
 /** List all sessions for a project, sorted by time.updated descending. */

@@ -240,7 +240,9 @@ async function runTui(
     ...new Set([model, ...listKnownModels(config).map((m) => m.spec)]),
   ]
 
-  const app = render(
+  // `app` is assigned by the render call below; callbacks only fire after
+  // that, so closing over it is safe.
+  const buildElement = (): React.ReactElement =>
     React.createElement(HaxfordApp, {
       store,
       bridge,
@@ -249,14 +251,20 @@ async function runTui(
       models: knownModels,
       onModelChange: (spec: string) => {
         model = spec
+        app.rerender(buildElement())
       },
-      onAbort: () => controller?.abort(),
+      onAbort: () => {
+        controller?.abort()
+        bridge.cancel()
+      },
       onPrompt,
       onExit: () => {
+        bridge.cancel()
         app.unmount()
         process.exit(0)
       },
       onNewSession: () => {
+        if (running) return
         void (async () => {
           session = await createSession(cwd)
           history = []
@@ -265,6 +273,7 @@ async function runTui(
       },
       listSessions: () => listSessions(cwd),
       onResumeSession: (id: string) => {
+        if (running) return
         void (async () => {
           const s = await getSession(cwd, id)
           if (!s) return
@@ -273,8 +282,9 @@ async function runTui(
           store.reset(history)
         })()
       },
-    }),
-  )
+    })
+
+  const app = render(buildElement())
 
   if (args.prompt) onPrompt(args.prompt)
 }

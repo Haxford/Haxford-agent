@@ -126,12 +126,15 @@ function playback(
     if (isApprovalStep(ev)) {
       clearInterval(timer)
       const req = ev.__approval
+      // Safety net: auto-allow after 8s so the demo never hangs. Cleared when
+      // the bridge resolves (by the user or this timer) so a later, unrelated
+      // request cannot be approved by a stale timer.
+      const safety = setTimeout(() => bridge.resolve("allow"), 8000)
       void bridge.askPermission(req).then(() => {
+        clearTimeout(safety)
         store.dispatch(ev) // dispatch the part.updated (tool running) after approval
         playback(store, bridge, events.slice(i), delayMs)
       })
-      // Safety net: auto-allow after 8s so the demo never hangs.
-      setTimeout(() => bridge.resolve("allow"), 8000)
       return
     }
 

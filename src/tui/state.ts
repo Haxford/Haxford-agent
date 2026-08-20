@@ -1,5 +1,5 @@
 import type { AgentEvent } from "../types/events.ts"
-import type { Message, Part, TextPart, TokenUsage } from "../types/message.ts"
+import type { Message, Part, ReasoningPart, TextPart, TokenUsage } from "../types/message.ts"
 
 /** Cumulative token usage across a session. */
 export interface TotalUsage {
@@ -58,10 +58,12 @@ function findPart(message: Message, partID: string): number {
 
 /** Structurally clone a message so callers never mutate stored state. */
 function cloneMessage(m: Message): Message {
+  const { usage: _usage, ...rest } = m
+  void _usage
   return {
-    ...m,
+    ...rest,
     parts: m.parts.map((p) => ({ ...p })),
-    usage: m.usage ? { ...m.usage } : undefined,
+    ...(m.usage ? { usage: { ...m.usage } } : {}),
     time: { ...m.time },
   }
 }
@@ -108,15 +110,25 @@ export function reduce(state: TuiState, event: AgentEvent): TuiState {
       if (idx === -1) return state
       const msg = cloneMessage(state.messages[idx]!)
       const pi = findPart(msg, event.partID)
-      if (pi === -1) return state
+      // Upsert: the real loop emits message.updated with an empty parts array,
+      // then part.delta before any part.updated, so the part may not exist yet.
+      // Create a TextPart keyed by the delta's partID and append it.
+      if (pi === -1) {
+        const created: TextPart = { id: event.partID, type: "text", text: event.delta }
+        msg.parts = [...msg.parts, created]
+        return { ...state, messages: withMessage(state.messages, idx, msg) }
+      }
       const part = msg.parts[pi]!
-      // Deltas only apply to text-bearing parts (text / reasoning).
+      // Deltas apply to text-bearing parts (text / reasoning). Reasoning parts
+      // preserve their type — a delta accumulates onto their text, not rewrites
+      // them into TextParts.
       if (part.type === "text" || part.type === "reasoning") {
-        const textPart: TextPart = part.type === "text"
-          ? { ...part, text: part.text + event.delta }
-          : { id: part.id, type: "text", text: part.text + event.delta }
+        const updated: TextPart | ReasoningPart =
+          part.type === "text"
+            ? { ...part, text: part.text + event.delta }
+            : { ...part, text: part.text + event.delta }
         const parts = msg.parts.slice()
-        parts[pi] = textPart
+        parts[pi] = updated
         msg.parts = parts
         return { ...state, messages: withMessage(state.messages, idx, msg) }
       }
@@ -147,6 +159,12 @@ export function reduce(state: TuiState, event: AgentEvent): TuiState {
     }
 
     case "loop.end": {
+      // Preserve a prior error status: an error event followed by loop.end
+      // must not be overwritten with "ended", or the status bar hides the
+      // failure. Only transition to "ended" when not already in an error.
+      if (state.status === "error") {
+        return { ...state, endReason: event.reason }
+      }
       return { ...state, status: "ended", endReason: event.reason }
     }
 

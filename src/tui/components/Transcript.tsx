@@ -1,5 +1,5 @@
 import { Box, Text } from "ink"
-import React, { useState } from "react"
+import React from "react"
 
 import type { Message, ReasoningPart, TextPart, ToolPart } from "../../types/message.ts"
 import { useInterval } from "../hooks.ts"

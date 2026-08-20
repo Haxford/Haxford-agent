@@ -26,6 +26,35 @@ export function contextLimit(modelSpec: string): number {
     return DEFAULT_LIMIT
   }
 
+  // ChatGPT Codex backend.
+  if (provider === "codex") {
+    if (model.startsWith("gpt-5")) return 200_000
+    return DEFAULT_LIMIT
+  }
+
+  // z.ai / Zhipu GLM.
+  if (provider === "zai") {
+    if (model.startsWith("glm-")) return 128_000
+    return DEFAULT_LIMIT
+  }
+
+  // Moonshot / Kimi. `moonshot` and its `kimi` alias resolve identically.
+  if (provider === "moonshot" || provider === "kimi") {
+    if (model.startsWith("kimi-k2")) return 128_000
+    // moonshot-v1-8k / -32k / -128k state their window in the id.
+    const sized = /-(\d+)k$/.exec(model)
+    const k = sized?.[1]
+    if (k !== undefined) return Number(k) * 1000
+    return 128_000
+  }
+
+  // Locally served models are usually configured with a small window.
+  if (provider === "ollama") return 32_000
+
+  // Gateways front many models; assume a large window and let real usage
+  // readings drive compaction rather than guessing per upstream model.
+  if (provider === "openrouter" || provider === "opencode") return 200_000
+
   return DEFAULT_LIMIT
 }
 

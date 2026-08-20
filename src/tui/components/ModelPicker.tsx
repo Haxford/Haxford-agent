@@ -58,7 +58,7 @@ export function ModelPicker({
             const selected = i === safeCursor
             const isCurrent = spec === current
             return (
-              <Box key={spec} gap={1}>
+              <Box key={`${i}:${spec}`} gap={1}>
                 <Text color={selected ? "magenta" : "gray"}>
                   {selected ? "▸" : " "}
                 </Text>

@@ -58,7 +58,7 @@ describe("tui reducer", () => {
     expect((s.messages[0]?.parts[0] as { text: string }).text).toBe("line1\nline2")
   })
 
-  test("part.delta on a reasoning part converts it to accumulating text", () => {
+  test("part.delta on a reasoning part accumulates text, preserving type", () => {
     const m: Message = {
       id: "a3", sessionID: "s", role: "assistant",
       parts: [{ id: "r1", type: "reasoning", text: "" }],
@@ -67,7 +67,7 @@ describe("tui reducer", () => {
     let s = reduce(initialTuiState, msgEvent(m))
     s = reduce(s, { type: "part.delta", messageID: "a3", partID: "r1", delta: "thinking" })
     const part = s.messages[0]?.parts[0]
-    expect(part?.type).toBe("text")
+    expect(part?.type).toBe("reasoning")
     expect((part as { text: string }).text).toBe("thinking")
   })
 

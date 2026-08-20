@@ -176,8 +176,9 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: true }))
           return
         }
-        // Unknown command -> show help with a hint.
+        // Unknown command -> show help with a hint about the unknown command.
         setUi((u) => ({ ...u, showHelp: true, showSessions: { kind: "idle" }, showModelPicker: false }))
+        store.dispatch({ type: "notice", message: `unknown command: ${trimmed}` })
         return
       }
 
@@ -185,7 +186,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       onPrompt(trimmed)
       setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
     },
-    [onAbort, onExit, onNewSession, onPrompt, pending, state.status],
+    [onAbort, onExit, onNewSession, onPrompt, pending, state.status, store],
   )
 
   const running = state.status === "running"
@@ -269,6 +270,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         turn={state.turn}
         usage={state.usage}
         error={state.error}
+        endReason={state.endReason}
       />
       <Composer disabled={composerDisabled} onSubmit={submit} />
     </Box>
