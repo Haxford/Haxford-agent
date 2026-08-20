@@ -14,7 +14,7 @@ import React from "react"
 import { runAgentLoop } from "./agent/loop.ts"
 import { loadConfig } from "./config/index.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
-import { defaultModelSpec } from "./providers/index.ts"
+import { defaultModelSpec, listKnownModels } from "./providers/index.ts"
 import {
   appendMessage,
   createSession,
@@ -174,7 +174,7 @@ async function runTui(
   projectInstructions: string | undefined,
 ): Promise<void> {
   let { session, history } = await openSession(cwd, args)
-  const model = args.model ?? config.model ?? defaultModelSpec()
+  let model = args.model ?? config.model ?? defaultModelSpec()
 
   const bridge = createApprovalBridge()
   const store = createTuiStore(history)
@@ -185,6 +185,7 @@ async function runTui(
   })
 
   let running = false
+  let controller: AbortController | undefined
 
   const onPrompt = (text: string): void => {
     if (running) return
@@ -201,6 +202,7 @@ async function runTui(
       }
 
       try {
+        controller = new AbortController()
         for await (const event of runAgentLoop({
           sessionID: session.id,
           agent: "build",
@@ -212,6 +214,7 @@ async function runTui(
           config,
           projectInstructions,
           askPermission,
+          abort: controller.signal,
         })) {
           store.dispatch(event)
           if (event.type === "message.updated" && event.message.role === "assistant") {
@@ -227,10 +230,15 @@ async function runTui(
           message: error instanceof Error ? error.message : String(error),
         })
       } finally {
+        controller = undefined
         running = false
       }
     })()
   }
+
+  const knownModels = [
+    ...new Set([model, ...listKnownModels(config).map((m) => m.spec)]),
+  ]
 
   const app = render(
     React.createElement(HaxfordApp, {
@@ -238,6 +246,11 @@ async function runTui(
       bridge,
       model,
       mode: args.mode,
+      models: knownModels,
+      onModelChange: (spec: string) => {
+        model = spec
+      },
+      onAbort: () => controller?.abort(),
       onPrompt,
       onExit: () => {
         app.unmount()

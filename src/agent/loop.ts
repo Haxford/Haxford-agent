@@ -196,6 +196,32 @@ function buildToolSet(tools: Tool[], ctx: ToolContext): ToolSet {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Subagent plumbing                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Extra context the loop hands to tools that spawn a nested loop (task).
+ *
+ * Deliberately passed on the ToolContext rather than held in a module-scoped
+ * variable: subagent loops run *nested* inside the parent's tool execution,
+ * so a global set at loop start would be clobbered by the child and leave the
+ * parent reading the child's value. Per-context data has no such problem, and
+ * parallel task calls each get the right one.
+ */
+export interface SubagentContext {
+  /** "provider/model" the parent loop is running. */
+  model: string
+  config?: HaxfordConfig
+  /** The parent's tool list; task removes itself from it to prevent nesting. */
+  tools: Tool[]
+}
+
+/** ToolContext as the loop actually builds it. */
+export type ToolContextWithSubagent = ToolContext & {
+  subagent?: SubagentContext
+}
+
+/* -------------------------------------------------------------------------- */
 /* Compaction                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -266,12 +292,17 @@ export async function* runAgentLoop(
   // Stable across turns, so the cached prefix survives the whole loop.
   const system = assembleSystemPrompt(cwd, input.projectInstructions)
 
-  const toolCtx: ToolContext = {
+  const toolCtx: ToolContextWithSubagent = {
     sessionID,
     agent,
     cwd,
     abort: abort ?? new AbortController().signal,
     askPermission: input.askPermission ?? (async () => "allow"),
+    subagent: {
+      model: modelSpec,
+      ...(input.config ? { config: input.config } : {}),
+      tools: input.tools ?? [],
+    },
   }
   const toolSet =
     input.tools && input.tools.length > 0

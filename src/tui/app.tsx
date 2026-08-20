@@ -5,6 +5,7 @@ import type { SessionInfo } from "../types/session.ts"
 import type { PermissionRequest } from "../types/tool.ts"
 import type { ApprovalBridge } from "./approval.ts"
 import { Composer } from "./components/Composer.tsx"
+import { ModelPicker } from "./components/ModelPicker.tsx"
 import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { SessionPicker } from "./components/SessionPicker.tsx"
 import { StatusBar } from "./components/StatusBar.tsx"
@@ -15,9 +16,11 @@ const HELP_TEXT = [
   "/exit       quit haxford",
   "/clear      start a fresh session",
   "/sessions   resume a previous session",
+  "/model      switch the active model",
   "/help       show this help",
   "",
   "type a prompt and press Enter to send to the model.",
+  "press Esc while running to abort the current turn.",
 ].join("\n")
 
 /** A pending async load: either loading, ready, or errored. */
@@ -32,8 +35,14 @@ export interface HaxfordAppProps {
   bridge: ApprovalBridge
   model: string
   mode: "build" | "auto" | "plan"
+  /** Known provider/model specs for the /model picker. */
+  models: string[]
   /** User submitted a prompt. The HOST creates+persists+emits the user Message and runs the loop. */
   onPrompt(text: string): void
+  /** Esc pressed while running. Host owns the AbortController; app just signals. */
+  onAbort(): void
+  /** Host selected a new model spec via /model picker. */
+  onModelChange(spec: string): void
   /** /exit or ctrl+c on empty composer */
   onExit(): void
   /** /clear — host starts a fresh session and calls store.reset([]) */
@@ -62,20 +71,35 @@ function usePendingRequest(bridge: ApprovalBridge): PermissionRequest | undefine
   )
 }
 
-/** Local UI state not owned by the agent reducer (slash help, sessions picker). */
+/** Local UI state not owned by the agent reducer (slash help, pickers). */
 interface UiFlags {
   showHelp: boolean
   showSessions: LoadState
+  showModelPicker: boolean
 }
 
 export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
-  const { store, bridge, model, mode, onPrompt, onExit, onNewSession, listSessions, onResumeSession } = props
+  const {
+    store,
+    bridge,
+    model,
+    mode,
+    models,
+    onPrompt,
+    onAbort,
+    onModelChange,
+    onExit,
+    onNewSession,
+    listSessions,
+    onResumeSession,
+  } = props
   const state = useTuiState(store)
   const pending = usePendingRequest(bridge)
 
   const [ui, setUi] = useState<UiFlags>({
     showHelp: false,
     showSessions: { kind: "idle" },
+    showModelPicker: false,
   })
 
   // While the sessions picker is open, load sessions lazily once.
@@ -95,7 +119,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     return () => { cancelled = true }
   }, [ui.showSessions.kind, listSessions])
 
-  // App-level keyboard. Order of precedence: permission dialog (modal) > overlays > rest.
+  // App-level keyboard. Order of precedence: permission dialog (modal) >
+  // abort (Esc while running) > overlays > rest.
   useInput((input, key) => {
     // While a permission request is pending, the dialog is modal.
     if (pending !== undefined) {
@@ -109,9 +134,15 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       else if (c === "d") bridge.resolve("deny")
       return
     }
-    // Escape closes any open overlay (help / sessions picker / sessions error).
-    if (key.escape && (ui.showHelp || ui.showSessions.kind !== "idle")) {
-      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" } }))
+    // Esc while the loop is running signals abort (host owns AbortController).
+    // Read live status from the store to avoid any closure staleness.
+    if (key.escape && store.getState().status === "running") {
+      onAbort()
+      return
+    }
+    // Escape closes any open overlay (help / sessions picker / model picker).
+    if (key.escape && (ui.showHelp || ui.showSessions.kind !== "idle" || ui.showModelPicker)) {
+      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
     }
   })
 
@@ -130,31 +161,39 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         }
         if (cmd === "/clear") {
           onNewSession()
-          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" } }))
+          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
           return
         }
         if (cmd === "/help") {
-          setUi((u) => ({ ...u, showHelp: !u.showHelp, showSessions: { kind: "idle" } }))
+          setUi((u) => ({ ...u, showHelp: !u.showHelp, showSessions: { kind: "idle" }, showModelPicker: false }))
           return
         }
         if (cmd === "/sessions") {
-          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "loading" } }))
+          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "loading" }, showModelPicker: false }))
+          return
+        }
+        if (cmd === "/model") {
+          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: true }))
           return
         }
         // Unknown command -> show help with a hint.
-        setUi((u) => ({ ...u, showHelp: true, showSessions: { kind: "idle" } }))
+        setUi((u) => ({ ...u, showHelp: true, showSessions: { kind: "idle" }, showModelPicker: false }))
         return
       }
 
       // Non-slash prompt: the HOST owns creating/persisting the user message.
       onPrompt(trimmed)
-      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" } }))
+      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
     },
-    [onExit, onNewSession, onPrompt, pending],
+    [onAbort, onExit, onNewSession, onPrompt, pending, state.status],
   )
 
   const running = state.status === "running"
-  const composerDisabled = running || pending !== undefined || ui.showSessions.kind !== "idle"
+  const composerDisabled =
+    running ||
+    pending !== undefined ||
+    ui.showSessions.kind !== "idle" ||
+    ui.showModelPicker
 
   const closeSessions = useCallback(() => {
     setUi((u) => ({ ...u, showSessions: { kind: "idle" } }))
@@ -166,6 +205,18 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       onResumeSession(id)
     },
     [onResumeSession],
+  )
+
+  const closeModelPicker = useCallback(() => {
+    setUi((u) => ({ ...u, showModelPicker: false }))
+  }, [])
+
+  const selectModel = useCallback(
+    (spec: string) => {
+      setUi((u) => ({ ...u, showModelPicker: false }))
+      onModelChange(spec)
+    },
+    [onModelChange],
   )
 
   return (
@@ -201,6 +252,15 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           <Text dimColor>{ui.showSessions.message}</Text>
           <Text dimColor>{"press Esc to close"}</Text>
         </Box>
+      ) : null}
+
+      {ui.showModelPicker ? (
+        <ModelPicker
+          models={models}
+          current={model}
+          onSelect={selectModel}
+          onCancel={closeModelPicker}
+        />
       ) : null}
 
       <StatusBar

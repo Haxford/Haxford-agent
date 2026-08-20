@@ -12,6 +12,12 @@ import { createTuiStore, type TuiStore } from "./store.ts"
 
 const MODEL = "mock/haxford-demo"
 const MODE: "build" | "auto" | "plan" = "build"
+const MODELS = [
+  "mock/haxford-demo",
+  "anthropic/claude-sonnet-4-20250514",
+  "openai/gpt-4o",
+  "google/gemini-2.0-flash",
+]
 
 /** A gated bash action that suspends the playback until the bridge resolves. */
 interface ApprovalStep {
@@ -148,6 +154,7 @@ function userMessage(text: string): Message {
 function main(): void {
   const store = createTuiStore([])
   const bridge = createApprovalBridge()
+  let currentModel = MODEL
 
   // Seed a welcome notice so the new event path is visible immediately.
   store.dispatch({ type: "notice", message: "haxford demo — type a prompt, /help for commands, /exit to quit" })
@@ -166,6 +173,17 @@ function main(): void {
     store.reset([])
     store.dispatch({ type: "notice", message: "started a fresh session" })
   }
+  const onAbort = (): void => {
+    // Host owns the AbortController; the demo just surfaces a notice and ends
+    // the current run so the UI doesn't stay stuck on "running".
+    store.dispatch({ type: "notice", message: "abort requested" })
+    store.dispatch({ type: "loop.end", reason: "aborted" })
+  }
+  const onModelChange = (spec: string): void => {
+    currentModel = spec
+    store.dispatch({ type: "notice", message: `model switched to ${spec}` })
+    rerender(createApp())
+  }
   const listSessions = async (): Promise<SessionInfo[]> => {
     // Fake a couple of historical sessions so the picker has content.
     await new Promise((r) => setTimeout(r, 200))
@@ -181,19 +199,23 @@ function main(): void {
     store.dispatch({ type: "notice", message: `resumed session ${id.slice(0, 8)}` })
   }
 
-  const { unmount } = render(
+  const createApp = (): React.ReactElement =>
     React.createElement(HaxfordApp, {
       store,
       bridge,
-      model: MODEL,
+      model: currentModel,
       mode: MODE,
+      models: MODELS,
       onPrompt,
+      onAbort,
+      onModelChange,
       onExit,
       onNewSession,
       listSessions,
       onResumeSession,
-    }),
-  )
+    })
+
+  const { rerender, unmount } = render(createApp())
 
   // Kick off an initial scripted run so the UI shows motion immediately.
   setTimeout(() => {

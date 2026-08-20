@@ -4,6 +4,7 @@ import { editTool } from "./edit.ts"
 import { globTool } from "./glob.ts"
 import { grepTool } from "./grep.ts"
 import { readTool } from "./read.ts"
+import { taskTool } from "./task.ts"
 import { todoReadTool, todoWriteTool } from "./todo.ts"
 import { writeTool } from "./write.ts"
 
@@ -12,6 +13,7 @@ export { editTool } from "./edit.ts"
 export { globTool } from "./glob.ts"
 export { grepTool } from "./grep.ts"
 export { readTool } from "./read.ts"
+export { taskTool } from "./task.ts"
 export { todoReadTool, todoWriteTool, getTodos, forgetTodos } from "./todo.ts"
 export type { Todo, TodoStatus } from "./todo.ts"
 export { writeTool } from "./write.ts"
@@ -33,5 +35,6 @@ export function allTools(): Tool[] {
     grepTool,
     todoWriteTool,
     todoReadTool,
+    taskTool,
   ]
 }
