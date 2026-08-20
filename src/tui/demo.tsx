@@ -3,12 +3,24 @@ import { render } from "ink"
 import React from "react"
 
 import type { AgentEvent } from "../types/events.ts"
+import type { PermissionRequest } from "../types/tool.ts"
 import { App, type DispatchHandle } from "./app.tsx"
+import { createApprovalBridge, type ApprovalBridge } from "./approval.ts"
 
 const MODEL = "mock/haxford-demo"
 
+/** A bash action that needs approval; the demo resolves it after a pause. */
+function approvalRequest(): PermissionRequest {
+  return {
+    tool: "bash",
+    title: "rm -rf node_modules && npm install",
+    args: { command: "rm -rf node_modules && npm install" },
+    sessionID: "demo",
+  }
+}
+
 /** Scripted mock event sequence that visibly animates the TUI. */
-function scriptedEvents(userText: string): AgentEvent[] {
+function scriptedEvents(userText: string, bridge: ApprovalBridge): AgentEvent[] {
   const userMsgID = crypto.randomUUID()
   const userPartID = `${userMsgID}-p`
   const asstMsgID = crypto.randomUUID()
@@ -16,7 +28,7 @@ function scriptedEvents(userText: string): AgentEvent[] {
   const toolPartID = `${asstMsgID}-tool`
   const now = Date.now()
 
-  return [
+  const events: AgentEvent[] = [
     // --- turn 1: user echo ---
     { type: "turn.start", turn: 1 },
     {
@@ -41,56 +53,98 @@ function scriptedEvents(userText: string): AgentEvent[] {
     { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "Let me " },
     { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "check that " },
     { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "for you.\n\n" },
-    { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "Running a quick command." },
+    { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "I'll need to reinstall deps." },
+  ]
 
-    // a bash tool call running -> completed
-    { type: "part.updated", messageID: asstMsgID, part: {
+  // Mid-stream, emit a gated bash action: askPermission suspends, the dialog
+  // appears, and the demo auto-resolves it as "allow" after a short pause so
+  // the run continues even if the user doesn't press a key. The user can still
+  // press a/l/d themselves — resolve() is idempotent for the first caller.
+  events.push({
+    type: "part.updated",
+    messageID: asstMsgID,
+    part: {
       id: toolPartID, type: "tool", tool: "bash", callID: "call_1",
-      state: { status: "running", input: { command: "ls -la" }, time: { start: now } },
-    } },
+      state: { status: "running", input: { command: "rm -rf node_modules && npm install" }, time: { start: now } },
+    },
+  })
+
+  // We insert a sentinel: the playback loop detects this index and, instead of
+  // dispatching immediately, calls bridge.askPermission (which renders the
+  // dialog) and awaits resolution before continuing.
+  ;(events[events.length - 1] as AgentEvent & { __approval?: PermissionRequest }).__approval =
+    approvalRequest()
+
+  events.push(
+    // tool completes after approval
     { type: "part.updated", messageID: asstMsgID, part: {
       id: toolPartID, type: "tool", tool: "bash", callID: "call_1",
       state: {
         status: "completed",
-        input: { command: "ls -la" },
-        output: "total 0\ndrwxr-xr-x 2 harry harry 6 Aug 20 21:46 src\n-rw-r--r-- 1 harry harry 0 Aug 20 21:46 README.md\nREADME.md",
-        title: "ls -la",
+        input: { command: "rm -rf node_modules && npm install" },
+        output: "removed node_modules\ninstalled 312 packages",
+        title: "rm -rf node_modules && npm install",
         metadata: {},
-        time: { start: now, end: now + 120 },
+        time: { start: now, end: now + 4200 },
       },
     } },
 
     // reasoning part (dimmed)
     { type: "part.updated", messageID: asstMsgID, part: {
-      id: `${asstMsgID}-r`, type: "reasoning", text: "considering the listing…",
+      id: `${asstMsgID}-r`, type: "reasoning", text: "deps reinstalled, ready to proceed…",
     } },
 
     // usage + loop end
     { type: "usage", messageID: asstMsgID, usage: { input: 128, output: 64, reasoning: 12 } },
     { type: "turn.end", turn: 1 },
     { type: "loop.end", reason: "end_turn" },
-  ]
+  )
+
+  return events
 }
 
-/** Play an event sequence on a timer so the UI animates. */
-function playback(handle: DispatchHandle, events: AgentEvent[], delayMs = 250): void {
+/** Play an event sequence on a timer so the UI animates. Approval sentinels
+ *  suspend playback until the bridge is resolved. */
+function playback(
+  handle: DispatchHandle,
+  bridge: ApprovalBridge,
+  events: AgentEvent[],
+  delayMs = 350,
+): void {
   let i = 0
-  const id = setInterval(() => {
+  const timer = setInterval(() => {
     if (i >= events.length) {
-      clearInterval(id)
+      clearInterval(timer)
       return
     }
-    handle.dispatch(events[i]!)
+    const ev = events[i]!
     i++
+    const sentinel = ev as AgentEvent & { __approval?: PermissionRequest }
+    if (sentinel.__approval !== undefined) {
+      // Suspend the timer; the dialog appears via bridge subscription. When
+      // the user (or the auto-resolve safety net) resolves, resume playback.
+      clearInterval(timer)
+      const req = sentinel.__approval
+      void bridge.askPermission(req).then(() => {
+        handle.dispatch(ev)
+        // Resume the remaining events.
+        playback(handle, bridge, events.slice(i), delayMs)
+      })
+      // Safety net: if the user doesn't press a key within 8s, auto-allow so
+      // the demo doesn't hang. resolve() is a no-op if already resolved.
+      setTimeout(() => bridge.resolve("allow"), 8000)
+      return
+    }
+    handle.dispatch(ev)
   }, delayMs)
 }
 
 function main(): void {
   const handle: DispatchHandle = { dispatch: () => {} }
+  const bridge = createApprovalBridge()
 
   const onPrompt = (value: string): void => {
-    // Replay the mock sequence seeded with the user's text.
-    playback(handle, scriptedEvents(value))
+    playback(handle, bridge, scriptedEvents(value, bridge))
   }
 
   const { rerender, unmount } = render(
@@ -98,20 +152,19 @@ function main(): void {
       model: MODEL,
       notice: "haxford demo — type a prompt, /help for commands, /exit to quit",
       handle,
+      bridge,
       onPrompt,
     }) as React.ReactElement,
   )
 
   // Kick off an initial scripted run so the UI shows motion immediately.
-  setTimeout(() => playback(handle, scriptedEvents("What files are in this project?")), 300)
+  setTimeout(() => playback(handle, bridge, scriptedEvents("Reinstall my deps, please.", bridge)), 400)
 
-  // Keep refs alive (Bun + ink); exit cleanly on Ctrl-C.
   process.on("SIGINT", () => {
     unmount()
     process.exit(0)
   })
 
-  // Touch rerender so the linter doesn't complain if unused downstream.
   void rerender
 }
 

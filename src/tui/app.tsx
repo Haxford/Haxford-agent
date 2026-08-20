@@ -1,13 +1,15 @@
-import { Box, Text, useApp } from "ink"
-import type React from "react"
-import { useCallback, useState } from "react"
+import { Box, Text, useApp, useInput } from "ink"
+import React, { useCallback, useState, useSyncExternalStore } from "react"
 
 import type { AgentEvent } from "../types/events.ts"
+import type { PermissionRequest } from "../types/tool.ts"
 import type { Message } from "../types/message.ts"
-import { type TuiState, initialTuiState, reduce } from "./state.ts"
+import { type ApprovalBridge, createApprovalBridge } from "./approval.ts"
 import { Composer } from "./components/Composer.tsx"
+import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { StatusBar } from "./components/StatusBar.tsx"
 import { Transcript } from "./components/Transcript.tsx"
+import { type TuiState, initialTuiState, reduce } from "./state.ts"
 
 /** Result of handling a slash command. */
 interface SlashResult {
@@ -49,10 +51,22 @@ export interface AppProps {
   notice?: string
   /** Host-provided handle; receives the dispatch function on mount. */
   handle?: DispatchHandle
+  /** Host-provided approval bridge; if omitted a fresh one is created. */
+  bridge?: ApprovalBridge
 }
 
-export function App({ model, initial, onPrompt, notice, handle }: AppProps): React.ReactElement {
+/** Subscribe to a bridge's pending-request changes for useSyncExternalStore. */
+function usePendingRequest(bridge: ApprovalBridge): PermissionRequest | undefined {
+  return useSyncExternalStore(
+    (listener) => bridge.subscribe(listener),
+    () => bridge.pending(),
+    () => undefined,
+  )
+}
+
+export function App({ model, initial, onPrompt, notice, handle, bridge }: AppProps): React.ReactElement {
   const { exit } = useApp()
+  const ownedBridge = useState(() => bridge ?? createApprovalBridge())[0]
   const [state, setState] = useState<TuiState>(initial ?? initialTuiState)
   const [flash, setFlash] = useState<string | undefined>(notice)
 
@@ -62,6 +76,22 @@ export function App({ model, initial, onPrompt, notice, handle }: AppProps): Rea
 
   // Hand the dispatch to the host once it is available.
   if (handle !== undefined) handle.dispatch = dispatch
+
+  const pending = usePendingRequest(ownedBridge)
+
+  // App-level keyboard: while a request is pending, a/l/d resolve the bridge
+  // and the Composer is disabled. Other keys are ignored so the dialog is modal.
+  useInput((_, key) => {
+    if (pending === undefined) return
+    if (key.escape) {
+      ownedBridge.resolve("deny")
+      return
+    }
+    const input = _.toLowerCase()
+    if (input === "a") ownedBridge.resolve("allow")
+    else if (input === "l") ownedBridge.resolve("always")
+    else if (input === "d") ownedBridge.resolve("deny")
+  })
 
   const submit = useCallback(
     (value: string) => {
@@ -96,13 +126,18 @@ export function App({ model, initial, onPrompt, notice, handle }: AppProps): Rea
   )
 
   const running = state.status === "running"
+  // Composer is disabled while the loop is running OR a permission dialog is modal.
+  const composerDisabled = running || pending !== undefined
 
   return (
     <Box flexDirection="column" gap={1}>
       <Transcript messages={state.messages} />
+      {pending !== undefined ? (
+        <PermissionDialog request={pending} />
+      ) : null}
       {flash !== undefined ? (
         <Box flexDirection="column">
-          <Text dimColor>─</Text>
+          <Text dimColor>{"─"}</Text>
           <Text>{flash}</Text>
         </Box>
       ) : null}
@@ -113,7 +148,11 @@ export function App({ model, initial, onPrompt, notice, handle }: AppProps): Rea
         usage={state.usage}
         error={state.error}
       />
-      <Composer disabled={running} onSubmit={submit} />
+      <Composer disabled={composerDisabled} onSubmit={submit} />
     </Box>
   )
 }
+
+/** Re-export so hosts can construct their own bridge if they want to share it. */
+export { createApprovalBridge }
+export type { ApprovalBridge }
