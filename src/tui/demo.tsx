@@ -4,23 +4,26 @@ import React from "react"
 
 import type { AgentEvent } from "../types/events.ts"
 import type { PermissionRequest } from "../types/tool.ts"
-import { App, type DispatchHandle } from "./app.tsx"
+import type { Message } from "../types/message.ts"
+import type { SessionInfo } from "../types/session.ts"
+import { HaxfordApp } from "./app.tsx"
 import { createApprovalBridge, type ApprovalBridge } from "./approval.ts"
+import { createTuiStore, type TuiStore } from "./store.ts"
 
 const MODEL = "mock/haxford-demo"
+const MODE: "build" | "auto" | "plan" = "build"
 
-/** A bash action that needs approval; the demo resolves it after a pause. */
-function approvalRequest(): PermissionRequest {
-  return {
-    tool: "bash",
-    title: "rm -rf node_modules && npm install",
-    args: { command: "rm -rf node_modules && npm install" },
-    sessionID: "demo",
-  }
+/** A gated bash action that suspends the playback until the bridge resolves. */
+interface ApprovalStep {
+  __approval: PermissionRequest
+}
+
+function isApprovalStep(ev: AgentEvent): ev is AgentEvent & ApprovalStep {
+  return (ev as AgentEvent & Partial<ApprovalStep>).__approval !== undefined
 }
 
 /** Scripted mock event sequence that visibly animates the TUI. */
-function scriptedEvents(userText: string, bridge: ApprovalBridge): AgentEvent[] {
+function scriptedEvents(userText: string): AgentEvent[] {
   const userMsgID = crypto.randomUUID()
   const userPartID = `${userMsgID}-p`
   const asstMsgID = crypto.randomUUID()
@@ -29,7 +32,6 @@ function scriptedEvents(userText: string, bridge: ApprovalBridge): AgentEvent[] 
   const now = Date.now()
 
   const events: AgentEvent[] = [
-    // --- turn 1: user echo ---
     { type: "turn.start", turn: 1 },
     {
       type: "message.updated",
@@ -41,39 +43,39 @@ function scriptedEvents(userText: string, bridge: ApprovalBridge): AgentEvent[] 
         time: { created: now },
       },
     },
-
-    // --- assistant begins ---
     { type: "message.updated", message: {
       id: asstMsgID, sessionID: "demo", role: "assistant", model: MODEL,
       parts: [{ id: textPartID, type: "text", text: "" }],
       time: { created: now },
     } },
-
-    // streaming deltas (word by word)
     { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "Let me " },
     { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "check that " },
     { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "for you.\n\n" },
     { type: "part.delta", messageID: asstMsgID, partID: textPartID, delta: "I'll need to reinstall deps." },
+    // A system notice (dimmed) to exercise the new event.
+    { type: "notice", message: "context window at 42%" },
   ]
 
-  // Mid-stream, emit a gated bash action: askPermission suspends, the dialog
-  // appears, and the demo auto-resolves it as "allow" after a short pause so
-  // the run continues even if the user doesn't press a key. The user can still
-  // press a/l/d themselves — resolve() is idempotent for the first caller.
-  events.push({
+  // Gated bash action: a part.updated carrying an approval sentinel. The
+  // playback loop calls bridge.askPermission and suspends until resolved.
+  const gatedBase: Extract<AgentEvent, { type: "part.updated" }> = {
     type: "part.updated",
     messageID: asstMsgID,
     part: {
       id: toolPartID, type: "tool", tool: "bash", callID: "call_1",
       state: { status: "running", input: { command: "rm -rf node_modules && npm install" }, time: { start: now } },
     },
-  })
-
-  // We insert a sentinel: the playback loop detects this index and, instead of
-  // dispatching immediately, calls bridge.askPermission (which renders the
-  // dialog) and awaits resolution before continuing.
-  ;(events[events.length - 1] as AgentEvent & { __approval?: PermissionRequest }).__approval =
-    approvalRequest()
+  }
+  const gated: AgentEvent & ApprovalStep = {
+    ...gatedBase,
+    __approval: {
+      tool: "bash",
+      title: "rm -rf node_modules && npm install",
+      args: { command: "rm -rf node_modules && npm install" },
+      sessionID: "demo",
+    },
+  }
+  events.push(gated)
 
   events.push(
     // tool completes after approval
@@ -88,13 +90,9 @@ function scriptedEvents(userText: string, bridge: ApprovalBridge): AgentEvent[] 
         time: { start: now, end: now + 4200 },
       },
     } },
-
-    // reasoning part (dimmed)
     { type: "part.updated", messageID: asstMsgID, part: {
       id: `${asstMsgID}-r`, type: "reasoning", text: "deps reinstalled, ready to proceed…",
     } },
-
-    // usage + loop end
     { type: "usage", messageID: asstMsgID, usage: { input: 128, output: 64, reasoning: 12 } },
     { type: "turn.end", turn: 1 },
     { type: "loop.end", reason: "end_turn" },
@@ -103,10 +101,9 @@ function scriptedEvents(userText: string, bridge: ApprovalBridge): AgentEvent[] 
   return events
 }
 
-/** Play an event sequence on a timer so the UI animates. Approval sentinels
- *  suspend playback until the bridge is resolved. */
+/** Play an event sequence on a timer. Approval sentinels suspend playback. */
 function playback(
-  handle: DispatchHandle,
+  store: TuiStore,
   bridge: ApprovalBridge,
   events: AgentEvent[],
   delayMs = 350,
@@ -119,53 +116,95 @@ function playback(
     }
     const ev = events[i]!
     i++
-    const sentinel = ev as AgentEvent & { __approval?: PermissionRequest }
-    if (sentinel.__approval !== undefined) {
-      // Suspend the timer; the dialog appears via bridge subscription. When
-      // the user (or the auto-resolve safety net) resolves, resume playback.
+
+    if (isApprovalStep(ev)) {
       clearInterval(timer)
-      const req = sentinel.__approval
+      const req = ev.__approval
       void bridge.askPermission(req).then(() => {
-        handle.dispatch(ev)
-        // Resume the remaining events.
-        playback(handle, bridge, events.slice(i), delayMs)
+        store.dispatch(ev) // dispatch the part.updated (tool running) after approval
+        playback(store, bridge, events.slice(i), delayMs)
       })
-      // Safety net: if the user doesn't press a key within 8s, auto-allow so
-      // the demo doesn't hang. resolve() is a no-op if already resolved.
+      // Safety net: auto-allow after 8s so the demo never hangs.
       setTimeout(() => bridge.resolve("allow"), 8000)
       return
     }
-    handle.dispatch(ev)
+
+    store.dispatch(ev)
   }, delayMs)
 }
 
+/** A fake user message the demo host "creates" on prompt (host owns this). */
+function userMessage(text: string): Message {
+  const id = crypto.randomUUID()
+  return {
+    id,
+    sessionID: "demo",
+    role: "user",
+    parts: [{ id: `${id}-p`, type: "text", text }],
+    time: { created: Date.now() },
+  }
+}
+
 function main(): void {
-  const handle: DispatchHandle = { dispatch: () => {} }
+  const store = createTuiStore([])
   const bridge = createApprovalBridge()
 
-  const onPrompt = (value: string): void => {
-    playback(handle, bridge, scriptedEvents(value, bridge))
+  // Seed a welcome notice so the new event path is visible immediately.
+  store.dispatch({ type: "notice", message: "haxford demo — type a prompt, /help for commands, /exit to quit" })
+
+  const onPrompt = (text: string): void => {
+    // Host owns creating + emitting the user message (app.tsx must NOT).
+    store.dispatch({ type: "message.updated", message: userMessage(text) })
+    // Replay the scripted mock events through the store.
+    playback(store, bridge, scriptedEvents(text))
   }
 
-  const { rerender, unmount } = render(
-    React.createElement(App, {
-      model: MODEL,
-      notice: "haxford demo — type a prompt, /help for commands, /exit to quit",
-      handle,
+  const onExit = (): void => {
+    process.exit(0)
+  }
+  const onNewSession = (): void => {
+    store.reset([])
+    store.dispatch({ type: "notice", message: "started a fresh session" })
+  }
+  const listSessions = async (): Promise<SessionInfo[]> => {
+    // Fake a couple of historical sessions so the picker has content.
+    await new Promise((r) => setTimeout(r, 200))
+    const now = Date.now()
+    return [
+      { id: "aaa11111-2222-3333-4444-555566667777", title: "debug build error", directory: "/demo", time: { created: now - 3600_000, updated: now - 3500_000 }, tokens: { input: 1200, output: 800 } },
+      { id: "bbb22222-3333-4444-5555-666677778888", title: "refactor utils", directory: "/demo", time: { created: now - 86_400_000, updated: now - 86_000_000 } },
+    ]
+  }
+  const onResumeSession = (id: string): void => {
+    // Fake: load history (here, empty) and reset the store.
+    store.reset([])
+    store.dispatch({ type: "notice", message: `resumed session ${id.slice(0, 8)}` })
+  }
+
+  const { unmount } = render(
+    React.createElement(HaxfordApp, {
+      store,
       bridge,
+      model: MODEL,
+      mode: MODE,
       onPrompt,
-    }) as React.ReactElement,
+      onExit,
+      onNewSession,
+      listSessions,
+      onResumeSession,
+    }),
   )
 
   // Kick off an initial scripted run so the UI shows motion immediately.
-  setTimeout(() => playback(handle, bridge, scriptedEvents("Reinstall my deps, please.", bridge)), 400)
+  setTimeout(() => {
+    store.dispatch({ type: "message.updated", message: userMessage("Reinstall my deps, please.") })
+    playback(store, bridge, scriptedEvents("Reinstall my deps, please."))
+  }, 400)
 
   process.on("SIGINT", () => {
     unmount()
     process.exit(0)
   })
-
-  void rerender
 }
 
 main()

@@ -22,3 +22,8 @@ export type AgentEvent =
   | { type: "turn.end"; turn: number }
   | { type: "loop.end"; reason: LoopEndReason }
   | { type: "error"; message: string }
+  /**
+   * Informational, non-error system note (e.g. "context compacted",
+   * "mode switched"). Rendered dimmed; never model-visible.
+   */
+  | { type: "notice"; message: string }

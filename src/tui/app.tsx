@@ -1,61 +1,59 @@
-import { Box, Text, useApp, useInput } from "ink"
-import React, { useCallback, useState, useSyncExternalStore } from "react"
+import { Box, Text, useInput } from "ink"
+import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 
-import type { AgentEvent } from "../types/events.ts"
+import type { SessionInfo } from "../types/session.ts"
 import type { PermissionRequest } from "../types/tool.ts"
-import type { Message } from "../types/message.ts"
-import { type ApprovalBridge, createApprovalBridge } from "./approval.ts"
+import type { ApprovalBridge } from "./approval.ts"
 import { Composer } from "./components/Composer.tsx"
 import { PermissionDialog } from "./components/PermissionDialog.tsx"
+import { SessionPicker } from "./components/SessionPicker.tsx"
 import { StatusBar } from "./components/StatusBar.tsx"
 import { Transcript } from "./components/Transcript.tsx"
-import { type TuiState, initialTuiState, reduce } from "./state.ts"
-
-/** Result of handling a slash command. */
-interface SlashResult {
-  notice?: string
-  exit?: boolean
-  clear?: boolean
-}
+import type { TuiStore } from "./store.ts"
 
 const HELP_TEXT = [
-  "/exit   quit haxford",
-  "/clear  clear the transcript",
-  "/help   show this help",
+  "/exit       quit haxford",
+  "/clear      start a fresh session",
+  "/sessions   resume a previous session",
+  "/help       show this help",
   "",
   "type a prompt and press Enter to send to the model.",
 ].join("\n")
 
-function handleSlash(command: string): SlashResult {
-  const trimmed = command.trim()
-  if (trimmed === "/exit") return { exit: true }
-  if (trimmed === "/clear") return { clear: true }
-  if (trimmed === "/help") return { notice: HELP_TEXT }
-  return { notice: `unknown command: ${trimmed}\n${HELP_TEXT}` }
-}
+/** A pending async load: either loading, ready, or errored. */
+type LoadState =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "ready"; sessions: SessionInfo[] }
+  | { kind: "error"; message: string }
 
-/**
- * Mutable handle a host uses to push AgentEvents into the running App without
- * prop-drilling through React renders. The App assigns `dispatch` on mount.
- */
-export interface DispatchHandle {
-  dispatch: (event: AgentEvent) => void
-}
-
-export interface AppProps {
+export interface HaxfordAppProps {
+  store: TuiStore
+  bridge: ApprovalBridge
   model: string
-  initial?: TuiState
-  /** Host callback when the user submits a non-slash prompt. */
-  onPrompt?: (value: string) => void
-  /** Optional inline notice shown above the status bar on startup. */
-  notice?: string
-  /** Host-provided handle; receives the dispatch function on mount. */
-  handle?: DispatchHandle
-  /** Host-provided approval bridge; if omitted a fresh one is created. */
-  bridge?: ApprovalBridge
+  mode: "build" | "auto" | "plan"
+  /** User submitted a prompt. The HOST creates+persists+emits the user Message and runs the loop. */
+  onPrompt(text: string): void
+  /** /exit or ctrl+c on empty composer */
+  onExit(): void
+  /** /clear — host starts a fresh session and calls store.reset([]) */
+  onNewSession(): void
+  /** For /sessions: host lists sessions; on resume host loads history and calls store.reset(history) */
+  listSessions(): Promise<SessionInfo[]>
+  /** Called when the user picks a session to resume. */
+  onResumeSession(id: string): void
 }
 
-/** Subscribe to a bridge's pending-request changes for useSyncExternalStore. */
+/** Subscribe to the store for useSyncExternalStore. */
+function useTuiState(store: TuiStore) {
+  return useSyncExternalStore(
+    (listener) => store.subscribe(listener),
+    () => store.getState(),
+    () => store.getState(),
+  )
+}
+
+/** Subscribe to a bridge's pending-request changes. */
 function usePendingRequest(bridge: ApprovalBridge): PermissionRequest | undefined {
   return useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
@@ -64,85 +62,149 @@ function usePendingRequest(bridge: ApprovalBridge): PermissionRequest | undefine
   )
 }
 
-export function App({ model, initial, onPrompt, notice, handle, bridge }: AppProps): React.ReactElement {
-  const { exit } = useApp()
-  const ownedBridge = useState(() => bridge ?? createApprovalBridge())[0]
-  const [state, setState] = useState<TuiState>(initial ?? initialTuiState)
-  const [flash, setFlash] = useState<string | undefined>(notice)
+/** Local UI state not owned by the agent reducer (slash help, sessions picker). */
+interface UiFlags {
+  showHelp: boolean
+  showSessions: LoadState
+}
 
-  const dispatch = useCallback((event: AgentEvent) => {
-    setState((prev) => reduce(prev, event))
-  }, [])
+export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
+  const { store, bridge, model, mode, onPrompt, onExit, onNewSession, listSessions, onResumeSession } = props
+  const state = useTuiState(store)
+  const pending = usePendingRequest(bridge)
 
-  // Hand the dispatch to the host once it is available.
-  if (handle !== undefined) handle.dispatch = dispatch
+  const [ui, setUi] = useState<UiFlags>({
+    showHelp: false,
+    showSessions: { kind: "idle" },
+  })
 
-  const pending = usePendingRequest(ownedBridge)
+  // While the sessions picker is open, load sessions lazily once.
+  useEffect(() => {
+    if (ui.showSessions.kind !== "loading") return
+    let cancelled = false
+    void listSessions()
+      .then((sessions) => {
+        if (cancelled) return
+        setUi((u) => ({ ...u, showSessions: { kind: "ready", sessions } }))
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        const message = err instanceof Error ? err.message : String(err)
+        setUi((u) => ({ ...u, showSessions: { kind: "error", message } }))
+      })
+    return () => { cancelled = true }
+  }, [ui.showSessions.kind, listSessions])
 
-  // App-level keyboard: while a request is pending, a/l/d resolve the bridge
-  // and the Composer is disabled. Other keys are ignored so the dialog is modal.
-  useInput((_, key) => {
-    if (pending === undefined) return
-    if (key.escape) {
-      ownedBridge.resolve("deny")
+  // App-level keyboard. Order of precedence: permission dialog (modal) > overlays > rest.
+  useInput((input, key) => {
+    // While a permission request is pending, the dialog is modal.
+    if (pending !== undefined) {
+      if (key.escape) {
+        bridge.resolve("deny")
+        return
+      }
+      const c = input.toLowerCase()
+      if (c === "a") bridge.resolve("allow")
+      else if (c === "l") bridge.resolve("always")
+      else if (c === "d") bridge.resolve("deny")
       return
     }
-    const input = _.toLowerCase()
-    if (input === "a") ownedBridge.resolve("allow")
-    else if (input === "l") ownedBridge.resolve("always")
-    else if (input === "d") ownedBridge.resolve("deny")
+    // Escape closes any open overlay (help / sessions picker / sessions error).
+    if (key.escape && (ui.showHelp || ui.showSessions.kind !== "idle")) {
+      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" } }))
+    }
   })
 
   const submit = useCallback(
     (value: string) => {
-      if (value.startsWith("/")) {
-        const result = handleSlash(value)
-        if (result.exit) {
-          exit()
+      // Ignore submissions while a permission dialog is modal.
+      if (pending !== undefined) return
+      const trimmed = value.trim()
+      if (trimmed.length === 0) return
+
+      if (trimmed.startsWith("/")) {
+        const cmd = trimmed.toLowerCase()
+        if (cmd === "/exit") {
+          onExit()
           return
         }
-        if (result.clear) {
-          setState((prev) => ({ ...prev, messages: [], error: undefined, endReason: undefined }))
-          setFlash(undefined)
+        if (cmd === "/clear") {
+          onNewSession()
+          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" } }))
           return
         }
-        if (result.notice !== undefined) setFlash(result.notice)
+        if (cmd === "/help") {
+          setUi((u) => ({ ...u, showHelp: !u.showHelp, showSessions: { kind: "idle" } }))
+          return
+        }
+        if (cmd === "/sessions") {
+          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "loading" } }))
+          return
+        }
+        // Unknown command -> show help with a hint.
+        setUi((u) => ({ ...u, showHelp: true, showSessions: { kind: "idle" } }))
         return
       }
-      const id = crypto.randomUUID()
-      const now = Date.now()
-      const message: Message = {
-        id,
-        sessionID: "tui",
-        role: "user",
-        parts: [{ id: `${id}-p`, type: "text", text: value }],
-        time: { created: now },
-      }
-      dispatch({ type: "message.updated", message })
-      setFlash(undefined)
-      onPrompt?.(value)
+
+      // Non-slash prompt: the HOST owns creating/persisting the user message.
+      onPrompt(trimmed)
+      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" } }))
     },
-    [dispatch, exit, onPrompt],
+    [onExit, onNewSession, onPrompt, pending],
   )
 
   const running = state.status === "running"
-  // Composer is disabled while the loop is running OR a permission dialog is modal.
-  const composerDisabled = running || pending !== undefined
+  const composerDisabled = running || pending !== undefined || ui.showSessions.kind !== "idle"
+
+  const closeSessions = useCallback(() => {
+    setUi((u) => ({ ...u, showSessions: { kind: "idle" } }))
+  }, [])
+
+  const selectSession = useCallback(
+    (id: string) => {
+      setUi((u) => ({ ...u, showSessions: { kind: "idle" } }))
+      onResumeSession(id)
+    },
+    [onResumeSession],
+  )
 
   return (
     <Box flexDirection="column" gap={1}>
-      <Transcript messages={state.messages} />
-      {pending !== undefined ? (
-        <PermissionDialog request={pending} />
-      ) : null}
-      {flash !== undefined ? (
+      <Transcript messages={state.messages} notices={state.notices} />
+
+      {pending !== undefined ? <PermissionDialog request={pending} /> : null}
+
+      {ui.showHelp ? (
         <Box flexDirection="column">
           <Text dimColor>{"─"}</Text>
-          <Text>{flash}</Text>
+          <Text>{HELP_TEXT}</Text>
         </Box>
       ) : null}
+
+      {ui.showSessions.kind === "loading" ? (
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
+          <Text color="cyan">{"loading sessions…"}</Text>
+        </Box>
+      ) : null}
+
+      {ui.showSessions.kind === "ready" ? (
+        <SessionPicker
+          sessions={ui.showSessions.sessions}
+          onSelect={selectSession}
+          onCancel={closeSessions}
+        />
+      ) : null}
+
+      {ui.showSessions.kind === "error" ? (
+        <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={2} paddingY={1}>
+          <Text color="red">{"failed to list sessions"}</Text>
+          <Text dimColor>{ui.showSessions.message}</Text>
+          <Text dimColor>{"press Esc to close"}</Text>
+        </Box>
+      ) : null}
+
       <StatusBar
-        model={model}
+        model={`${model} [${mode}]`}
         status={state.status}
         turn={state.turn}
         usage={state.usage}
@@ -153,6 +215,5 @@ export function App({ model, initial, onPrompt, notice, handle, bridge }: AppPro
   )
 }
 
-/** Re-export so hosts can construct their own bridge if they want to share it. */
-export { createApprovalBridge }
-export type { ApprovalBridge }
+// Re-export shared types so hosts can import everything from app.tsx if desired.
+export type { ApprovalBridge, TuiStore }

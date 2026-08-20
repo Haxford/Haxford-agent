@@ -25,6 +25,8 @@ export interface TuiState {
   usage: TotalUsage
   /** Last error message emitted via { type: "error" }. */
   error?: string
+  /** Informational system notes (newest last), capped at 50. */
+  notices: string[]
 }
 
 export const initialTuiState: TuiState = {
@@ -32,7 +34,11 @@ export const initialTuiState: TuiState = {
   turn: 0,
   status: "idle",
   usage: { input: 0, output: 0, reasoning: 0 },
+  notices: [],
 }
+
+/** Maximum number of notices retained in state. */
+const MAX_NOTICES = 50
 
 /** Find a message index by id. */
 function findMessage(messages: Message[], id: string): number {
@@ -148,6 +154,15 @@ export function reduce(state: TuiState, event: AgentEvent): TuiState {
       return { ...state, status: "error", error: event.message }
     }
 
+    case "notice": {
+      // Append newest last; drop oldest beyond the cap.
+      const notices = [...state.notices, event.message]
+      if (notices.length > MAX_NOTICES) {
+        return { ...state, notices: notices.slice(notices.length - MAX_NOTICES) }
+      }
+      return { ...state, notices }
+    }
+
     case "permission.request": {
       // No dedicated UI surface yet; surface as an error string so it is visible.
       return { ...state, error: `permission: ${event.request.title}` }
@@ -173,9 +188,4 @@ export function reduceAll(state: TuiState, events: AgentEvent[]): TuiState {
 /** Build a TuiState seeded with an existing message list (e.g. on resume). */
 export function fromMessages(messages: Message[]): TuiState {
   return { ...initialTuiState, messages: messages.map(cloneMessage) }
-}
-
-/** Type guard helper for narrowing parts in render code. */
-export function isTextPart(p: Part): p is TextPart {
-  return p.type === "text"
 }

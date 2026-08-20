@@ -146,6 +146,29 @@ describe("tui reducer", () => {
     expect(s.error).toBe("boom")
   })
 
+  test("notice appends to notices (default [])", () => {
+    let s = reduce(initialTuiState, { type: "notice", message: "hello" })
+    expect(initialTuiState.notices).toEqual([])
+    expect(s.notices).toEqual(["hello"])
+    s = reduce(s, { type: "notice", message: "world" })
+    expect(s.notices).toEqual(["hello", "world"])
+  })
+
+  test("notice does not mutate prior state", () => {
+    const s0 = reduce(initialTuiState, { type: "notice", message: "one" })
+    const s1 = reduce(s0, { type: "notice", message: "two" })
+    expect(s0.notices).toEqual(["one"])
+    expect(s1.notices).toEqual(["one", "two"])
+  })
+
+  test("notice caps at 50, dropping oldest", () => {
+    let s = initialTuiState
+    for (let i = 0; i < 60; i++) s = reduce(s, { type: "notice", message: `n${i}` })
+    expect(s.notices).toHaveLength(50)
+    expect(s.notices[0]).toBe("n10")
+    expect(s.notices[49]).toBe("n59")
+  })
+
   test("reduceAll folds a sequence", () => {
     const events: AgentEvent[] = [
       { type: "turn.start", turn: 1 },
@@ -162,6 +185,7 @@ describe("tui reducer", () => {
     const msgs = [userMsg("u1", "hi")]
     const s = fromMessages(msgs)
     expect(s.messages).toHaveLength(1)
+    expect(s.notices).toEqual([])
     // Mutate input; state must be unaffected.
     msgs[0]!.parts.push({ id: "x", type: "text", text: "extra" })
     expect(s.messages[0]?.parts).toHaveLength(1)

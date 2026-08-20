@@ -21,9 +21,18 @@ import type {
   ToolContext,
   ToolResult,
 } from "../types/tool.ts"
+import {
+  COMPACTION_MARKER,
+  COMPACTION_PROMPT,
+  contextLimit,
+  estimateTokens,
+} from "./context.ts"
 import { assembleSystemPrompt } from "./prompt.ts"
 
 const DEFAULT_MAX_TURNS = 100
+const DEFAULT_COMPACT_AT = 0.9
+/** Messages kept verbatim after the summary. */
+const COMPACT_TAIL = 2
 
 export interface AgentLoopInput {
   sessionID: string
@@ -187,6 +196,39 @@ function buildToolSet(tools: Tool[], ctx: ToolContext): ToolSet {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Compaction                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/** The most recent real input-token count, if any turn has reported one. */
+function latestUsageInput(history: Message[]): number | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const input = history[i]?.usage?.input
+    if (typeof input === "number" && input > 0) return input
+  }
+  return undefined
+}
+
+/**
+ * Ask the model to summarize the conversation so far. Runs without tools —
+ * we only want prose back. Rejects if the stream fails.
+ */
+async function summarize(
+  model: Parameters<typeof streamText>[0]["model"],
+  system: string,
+  messages: ModelMessage[],
+  abort: AbortSignal | undefined,
+): Promise<string> {
+  const result = streamText({
+    model,
+    system,
+    messages: [...messages, { role: "user", content: COMPACTION_PROMPT }],
+    ...(abort ? { abortSignal: abort } : {}),
+    onError: () => {},
+  })
+  return (await result.text).trim()
+}
+
+/* -------------------------------------------------------------------------- */
 /* Loop                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -237,17 +279,87 @@ export async function* runAgentLoop(
       : undefined
 
   // Working conversation: prior history plus this prompt, then each turn's
-  // assistant message as it completes.
+  // assistant message as it completes. A local copy — the caller's history
+  // array is never mutated, including by compaction.
   const conversation: Message[] = [...input.history]
   const prompt = input.userText.trim()
+  let finalUserMessage: Message | undefined
   if (prompt) {
-    conversation.push({
+    finalUserMessage = {
       id: crypto.randomUUID(),
       sessionID,
       role: "user",
       parts: [{ id: crypto.randomUUID(), type: "text", text: prompt }],
       time: { created: Date.now() },
-    })
+    }
+    conversation.push(finalUserMessage)
+  }
+
+  /* ---- context pressure ---- */
+  const limit = contextLimit(modelSpec)
+  const compactAt = input.config?.autoCompactAt ?? DEFAULT_COMPACT_AT
+  // Seed from the newest real usage figure in history; fall back to an
+  // estimate over what we are about to send.
+  let lastInput = latestUsageInput(input.history)
+  let compactionDisabled = false
+
+  /**
+   * Compact when the conversation is close to filling the window: summarize
+   * everything older than the tail, then keep [summary, …tail]. Failure is
+   * never fatal — the run continues with the un-compacted history.
+   */
+  const maybeCompact = async function* (): AsyncGenerator<AgentEvent> {
+    if (compactionDisabled) return
+
+    const modelMessages = toModelMessages(conversation)
+    const pressure = lastInput ?? estimateTokens(modelMessages)
+    if (pressure <= limit * compactAt) return
+    // Nothing older than the tail to summarize — compacting cannot help.
+    if (conversation.length <= COMPACT_TAIL) return
+
+    const percent = Math.round((pressure / limit) * 100)
+
+    try {
+      const summary = await summarize(model, system, modelMessages, abort)
+      if (!summary) throw new Error("model returned an empty summary")
+
+      const tail = conversation.slice(-COMPACT_TAIL)
+      // The request that started this run must survive compaction.
+      if (finalUserMessage && !tail.includes(finalUserMessage)) {
+        tail.unshift(finalUserMessage)
+      }
+
+      const synthetic: Message = {
+        id: crypto.randomUUID(),
+        sessionID,
+        role: "user",
+        parts: [
+          {
+            id: crypto.randomUUID(),
+            type: "text",
+            text: `${COMPACTION_MARKER}\n\n${summary}`,
+          },
+        ],
+        time: { created: Date.now() },
+      }
+
+      conversation.length = 0
+      conversation.push(synthetic, ...tail)
+      // Re-baseline so the next turn does not immediately re-compact.
+      lastInput = estimateTokens(toModelMessages(conversation))
+
+      yield {
+        type: "notice",
+        message: `context compacted (${percent}% of window)`,
+      }
+    } catch (error) {
+      // Do not retry every turn on a persistent failure.
+      compactionDisabled = true
+      yield {
+        type: "notice",
+        message: `context compaction failed (${errorMessage(error)}); continuing without compacting`,
+      }
+    }
   }
 
   let turn = 0
@@ -263,6 +375,9 @@ export async function* runAgentLoop(
       yield* finish("max_turns")
       return "max_turns"
     }
+
+    // Before every request, including the first.
+    yield* maybeCompact()
 
     yield { type: "turn.start", turn }
 
@@ -443,6 +558,8 @@ export async function* runAgentLoop(
 
     if (usage) {
       message.usage = usage
+      // Real pressure reading for the next turn's compaction check.
+      if (usage.input > 0) lastInput = usage.input
       yield { type: "usage", messageID: message.id, usage }
     }
 

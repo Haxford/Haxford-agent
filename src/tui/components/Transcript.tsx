@@ -119,14 +119,26 @@ export function MessageView({ message }: { message: Message }): React.ReactEleme
 
 export interface TranscriptProps {
   messages: Message[]
+  /** Optional dimmed system notices (newest last); rendered above the composer. */
+  notices?: string[]
 }
 
-export function Transcript({ messages }: TranscriptProps): React.ReactElement {
+export function Transcript({ messages, notices }: TranscriptProps): React.ReactElement {
   return (
     <Box flexDirection="column" gap={1}>
       {messages.map((m) => (
         <MessageView key={m.id} message={m} />
       ))}
+      {notices !== undefined && notices.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          {notices.slice(-5).map((n, i) => (
+            <Text key={i} dimColor wrap="wrap">
+              {"» "}
+              {n}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   )
 }
