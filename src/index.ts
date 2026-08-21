@@ -5,8 +5,8 @@
 // loop invocation, and event plumbing into the TUI store or stdout.
 
 // The AI SDK writes provider warnings to console.error, which corrupts the
-// Ink render. Silence them before anything imports the SDK.
-process.env["AI_SDK_LOG_WARNINGS"] ??= "0"
+// Ink render. It reads globalThis.AI_SDK_LOG_WARNINGS (boolean), not the env.
+;(globalThis as Record<string, unknown>)["AI_SDK_LOG_WARNINGS"] = false
 
 import { render } from "ink"
 import React from "react"
@@ -207,7 +207,9 @@ async function runTui(
           sessionID: session.id,
           agent: "build",
           cwd,
-          userText: text,
+          // The user turn is already the tail of history — passing it again
+          // as userText would duplicate it in the request.
+          userText: "",
           history: [...history],
           model,
           tools: allTools(),
@@ -217,7 +219,9 @@ async function runTui(
           abort: controller.signal,
         })) {
           store.dispatch(event)
-          if (event.type === "message.updated" && event.message.role === "assistant") {
+          // Persist every assistant message snapshot and the compaction
+          // summary (role user, synthetic) — appendMessage dedupes by id.
+          if (event.type === "message.updated") {
             await appendMessage(cwd, session.id, event.message)
             history = history.map((m) => (m.id === event.message.id ? event.message : m))
             if (!history.some((m) => m.id === event.message.id))
