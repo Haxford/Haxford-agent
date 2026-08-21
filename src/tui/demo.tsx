@@ -12,12 +12,14 @@ import { createTuiStore, type TuiStore } from "./store.ts"
 
 const MODEL = "mock/haxford-demo"
 const MODE: "build" | "auto" | "plan" = "build"
-const MODELS = [
-  "mock/haxford-demo",
-  "anthropic/claude-sonnet-4-20250514",
-  "openai/gpt-4o",
-  "google/gemini-2.0-flash",
+const MODELS: import("./components/ModelPicker.tsx").ModelOption[] = [
+  { spec: "mock/haxford-demo", available: true, label: "haxford demo", contextLength: 200_000, promptPricePerMtok: 0, completionPricePerMtok: 0 },
+  { spec: "anthropic/claude-sonnet-4-20250514", available: true, label: "Sonnet 4", contextLength: 200_000, promptPricePerMtok: 3, completionPricePerMtok: 15 },
+  { spec: "openai/gpt-4o", available: true, contextLength: 128_000, promptPricePerMtok: 2.5, completionPricePerMtok: 10 },
+  { spec: "google/gemini-2.0-flash", available: false, label: "Gemini 2.0 Flash", contextLength: 1_000_000, promptPricePerMtok: 0.1, completionPricePerMtok: 0.4 },
 ]
+const DEMO_CWD = "/home/you/project"
+const DEMO_SESSION_ID = "aaaa1111-2222-3333-4444-555566667777"
 
 /** A gated bash action that suspends the playback until the bridge resolves. */
 interface ApprovalStep {
@@ -219,6 +221,9 @@ function main(): void {
       model: currentModel,
       mode: currentMode,
       models: MODELS,
+      cwd: DEMO_CWD,
+      sessionID: DEMO_SESSION_ID,
+      contextLimit: 200_000,
       onPrompt,
       onAbort,
       onModelChange,

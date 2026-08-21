@@ -4,7 +4,9 @@ import React, { useCallback, useEffect, useState, useSyncExternalStore } from "r
 import type { SessionInfo } from "../types/session.ts"
 import type { PermissionRequest } from "../types/tool.ts"
 import type { ApprovalBridge } from "./approval.ts"
+import { Banner, shortCwd } from "./components/Banner.tsx"
 import { Composer } from "./components/Composer.tsx"
+import { HelpPanel, HELP_TEXT } from "./components/HelpPanel.tsx"
 import { ModelPicker } from "./components/ModelPicker.tsx"
 import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { SessionPicker } from "./components/SessionPicker.tsx"
@@ -12,21 +14,7 @@ import { StatusBar } from "./components/StatusBar.tsx"
 import { Transcript } from "./components/Transcript.tsx"
 import type { TuiStore } from "./store.ts"
 
-const HELP_TEXT = [
-  "/help       show this help",
-  "/model      switch the active model",
-  "/sessions   resume a previous session",
-  "/compact    compact the conversation now",
-  "/init       analyze the codebase and create/improve AGENTS.md",
-  "/mode       switch permission mode (build | auto | plan)",
-  "/clear      start a fresh session",
-  "/exit       quit haxford",
-  "",
-  "type a prompt and press Enter to send to the model.",
-  "press Esc while running to abort the current turn.",
-].join("\n")
-
-/** In-app help text; exported so tests can assert the full command listing. */
+/** Re-export HELP_TEXT (now sourced from HelpPanel) so tests import from app.tsx unchanged. */
 export { HELP_TEXT }
 
 /**
@@ -112,8 +100,14 @@ export interface HaxfordAppProps {
   bridge: ApprovalBridge
   model: string
   mode: "build" | "auto" | "plan"
-  /** Known provider/model specs for the /model picker. */
-  models: string[]
+  /** Known provider/model specs for the /model picker (string[] or rich entries). */
+  models: string[] | import("./components/ModelPicker.tsx").ModelOption[]
+  /** Working directory, shown in the banner and status bar. Optional so unwired hosts still typecheck. */
+  cwd?: string
+  /** Current session id, shown short-form in the status bar. Optional. */
+  sessionID?: string
+  /** Context window limit for the active model, for the ctx% indicator. Optional. */
+  contextLimit?: number
   /** User submitted a prompt. The HOST creates+persists+emits the user Message and runs the loop. */
   onPrompt(text: string): void
   /** Esc pressed while running. Host owns the AbortController; app just signals. */
@@ -166,6 +160,9 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     model,
     mode,
     models,
+    cwd,
+    sessionID,
+    contextLimit,
     onPrompt,
     onAbort,
     onModelChange,
@@ -202,6 +199,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     return () => { cancelled = true }
   }, [ui.showSessions.kind, listSessions])
 
+  const running = state.status === "running"
+
   // App-level keyboard. Order of precedence: permission dialog (modal) >
   // abort (Esc while running) > overlays > rest.
   useInput((input, key) => {
@@ -226,6 +225,13 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     // Escape closes any open overlay (help / sessions picker / model picker).
     if (key.escape && (ui.showHelp || ui.showSessions.kind !== "idle" || ui.showModelPicker)) {
       setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
+      return
+    }
+    // Tab in the empty-ish, idle, overlay-free composer cycles the permission
+    // mode build -> auto -> plan -> build (opencode-style). The host owns the
+    // actual mode state and rerenders.
+    if (key.tab && !running && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker) {
+      onModeChange(nextMode(mode))
     }
   })
 
@@ -289,7 +295,6 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     [mode, onAbort, onCompact, onExit, onModeChange, onNewSession, onPrompt, pending, resetOverlays, state.status, store],
   )
 
-  const running = state.status === "running"
   const composerDisabled =
     running ||
     pending !== undefined ||
@@ -320,18 +325,25 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     [onModelChange],
   )
 
+  const composerPlaceholder = composerDisabled
+    ? pending !== undefined
+      ? "awaiting approval…"
+      : "agent running…"
+    : mode === "plan"
+      ? "(plan) read-only research — edits require approval · type a prompt, /help for commands"
+      : `(${mode}) type a prompt, /help for commands · tab to cycle mode`
+
   return (
     <Box flexDirection="column" gap={1}>
+      {state.messages.length === 0 && state.notices.length === 0 && !pending ? (
+        <Banner model={model} mode={mode} cwd={cwd ?? shortCwd(".")} />
+      ) : null}
+
       <Transcript messages={state.messages} notices={state.notices} />
 
       {pending !== undefined ? <PermissionDialog request={pending} /> : null}
 
-      {ui.showHelp ? (
-        <Box flexDirection="column">
-          <Text dimColor>{"─"}</Text>
-          <Text>{HELP_TEXT}</Text>
-        </Box>
-      ) : null}
+      {ui.showHelp ? <HelpPanel /> : null}
 
       {ui.showSessions.kind === "loading" ? (
         <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
@@ -365,14 +377,17 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       ) : null}
 
       <StatusBar
-        model={`${model} [${mode}]`}
+        model={model}
+        mode={mode}
         status={state.status}
         turn={state.turn}
         usage={state.usage}
+        contextLimit={contextLimit}
+        sessionID={sessionID}
         error={state.error}
         endReason={state.endReason}
       />
-      <Composer disabled={composerDisabled} onSubmit={submit} />
+      <Composer disabled={composerDisabled} onSubmit={submit} placeholder={composerPlaceholder} />
     </Box>
   )
 }

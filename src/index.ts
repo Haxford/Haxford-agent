@@ -14,7 +14,7 @@ import React from "react"
 import { compactConversation, runAgentLoop } from "./agent/loop.ts"
 import { loadConfig } from "./config/index.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
-import { defaultModelSpec, listKnownModels } from "./providers/index.ts"
+import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels } from "./providers/index.ts"
 import {
   appendMessage,
   createSession,
@@ -26,6 +26,7 @@ import {
 import { allTools } from "./tools/index.ts"
 import { createApprovalBridge } from "./tui/approval.ts"
 import { HaxfordApp } from "./tui/app.tsx"
+import type { ModelOption } from "./tui/components/ModelPicker.tsx"
 import { createTuiStore } from "./tui/store.ts"
 import type { HaxfordConfig } from "./types/config.ts"
 import type { AgentEvent, LoopEndReason } from "./types/events.ts"
@@ -271,8 +272,28 @@ async function runTui(
     })()
   }
 
-  const knownModels = [
-    ...new Set([model, ...listKnownModels(config).map((m) => m.spec)]),
+  // Model picker contents: curated per-provider lists (availability-honest)
+  // enriched + extended by the live OpenRouter catalog (label/ctx/pricing).
+  // Offline or unauthenticated, the picker degrades to the curated list.
+  const curated = listKnownModels(config)
+  const catalog = await fetchOpenRouterCatalog()
+  const bySpec = new Map(catalog.map((c) => [c.spec, c]))
+  const openrouterReady = curated.some(
+    (m) => m.available && m.spec.startsWith("openrouter/"),
+  )
+  const curatedSpecs = new Set([model, ...curated.map((m) => m.spec)])
+  const knownModels: ModelOption[] = [
+    ...[...curatedSpecs].map((spec) => {
+      const known = curated.find((m) => m.spec === spec)
+      return {
+        spec,
+        available: known?.available ?? true,
+        ...(bySpec.get(spec) ?? {}),
+      }
+    }),
+    ...catalog
+      .filter((c) => !curatedSpecs.has(c.spec))
+      .map((c) => ({ ...c, available: openrouterReady })),
   ]
 
   // `app` is assigned by the render call below; callbacks only fire after

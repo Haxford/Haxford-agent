@@ -59,13 +59,12 @@ function mount(overrides: {
 }
 
 describe("HaxfordApp rendering + app-level input", () => {
-  test("initial render shows status bar with model + mode + idle", () => {
+  test("initial render shows status bar with model + mode badge + banner", () => {
     const { inst } = mount()
     const frame = inst.lastFrame() ?? ""
     expect(frame).toContain("mock/demo")
-    expect(frame).toContain("build")
-    expect(frame).toContain("idle")
-    // help hint mentions /model (one of the five commands).
+    expect(frame).toContain("[build]") // mode badge
+    expect(frame).toContain("haxford") // banner wordmark
     expect(frame).toContain("/help")
   })
 
@@ -110,8 +109,9 @@ describe("HaxfordApp rendering + app-level input", () => {
     })
     await flush()
     const frame = inst.lastFrame() ?? ""
-    expect(frame).toContain("permission required")
+    expect(frame).toContain("run command") // action kind for bash
     expect(frame).toContain("bash")
+    expect(frame).toContain("rm -rf /") // subject + title
     expect(frame).toContain("[a] allow once")
     expect(frame).toContain("[l] always (this session)")
     expect(frame).toContain("[d] deny")
@@ -167,8 +167,8 @@ describe("HaxfordApp rendering + app-level input", () => {
     await flush()
     // The dialog is modal: composer shows the disabled placeholder.
     const frame = inst.lastFrame() ?? ""
-    expect(frame).toContain("permission required")
-    expect(frame).toContain("agent running")
+    expect(frame).toContain("run command")
+    expect(frame).toContain("awaiting approval")
   })
 
   test("notices render as dimmed lines below the transcript", async () => {

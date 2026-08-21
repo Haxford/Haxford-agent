@@ -38,6 +38,14 @@ export interface ProviderDef {
    */
   resolveBaseURL?: () => string | undefined
   resolveHeaders?: (apiKey: string) => Record<string, string> | undefined
+  /**
+   * Liveness check for a provider whose endpoint may simply not be running.
+   * When present, availability requires it to pass *in addition* to a
+   * credential — a key alone proves nothing about a local daemon.
+   */
+  probe?: (target: string) => Promise<boolean>
+  /** The endpoint `probe` targets; doubles as the cache key for its result. */
+  probeTarget?: () => string
 }
 
 /** Treat blank/whitespace-only env values as unset. */
@@ -75,6 +83,85 @@ function ollamaTarget(): { baseURL: string; apiKey: string } {
   return { baseURL: `${withScheme.replace(/\/+$/, "")}/v1`, apiKey: "ollama" }
 }
 
+/** Long enough to survive a burst of picker renders, short enough that
+ *  starting the daemon is reflected the next time the picker opens. */
+const PROBE_TTL_MS = 30_000
+const OLLAMA_PROBE_TIMEOUT_MS = 1_500
+
+/**
+ * Ask an ollama server for its model list. Any HTTP answer proves a server is
+ * listening; a refused connection, DNS failure or timeout means there is not
+ * one, and the models it would serve are dead entries in the picker.
+ *
+ * Never throws — an unreachable host is a normal outcome, not an error.
+ */
+async function probeOllama(target: string): Promise<boolean> {
+  const root = target.replace(/\/v1\/?$/, "")
+  const key = env("OLLAMA_API_KEY")
+  try {
+    const response = await fetch(`${root}/api/tags`, {
+      method: "GET",
+      ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+      signal: AbortSignal.timeout(OLLAMA_PROBE_TIMEOUT_MS),
+    })
+    // We only care that something answered; drop the body promptly.
+    await response.body?.cancel()
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+/** Clear an in-flight slot once its promise settles, and never let the
+ *  bookkeeping chain surface as an unhandled rejection. */
+function whenSettled(promise: Promise<unknown>, clear: () => void): void {
+  void promise.finally(clear).catch(() => {})
+}
+
+interface ProbeResult {
+  at: number
+  target: string
+  reachable: boolean
+}
+
+const probeCache = new Map<string, ProbeResult>()
+const probeInFlight = new Map<string, Promise<boolean>>()
+
+/** A probe result we can trust right now, or undefined if we must go look. */
+function cachedProbe(provider: string, target: string): boolean | undefined {
+  const hit = probeCache.get(provider)
+  if (!hit || hit.target !== target) return undefined
+  if (Date.now() - hit.at > PROBE_TTL_MS) return undefined
+  return hit.reachable
+}
+
+/** Run (or join) the probe for a provider, caching the outcome. */
+function runProbe(
+  provider: string,
+  probe: (target: string) => Promise<boolean>,
+  target: string,
+): Promise<boolean> {
+  const existing = probeInFlight.get(provider)
+  if (existing) return existing
+
+  const started = (async (): Promise<boolean> => {
+    let reachable = false
+    try {
+      reachable = await probe(target)
+    } catch {
+      reachable = false
+    }
+    probeCache.set(provider, { at: Date.now(), target, reachable })
+    return reachable
+  })()
+
+  probeInFlight.set(provider, started)
+  whenSettled(started, () => {
+    if (probeInFlight.get(provider) === started) probeInFlight.delete(provider)
+  })
+  return started
+}
+
 /* -------------------------------------------------------------------------- */
 /* Registry                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -83,28 +170,57 @@ const PROVIDERS: Record<string, ProviderDef> = {
   anthropic: {
     envKey: "ANTHROPIC_API_KEY",
     api: "anthropic",
-    knownModels: ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5"],
+    knownModels: [
+      "claude-sonnet-5",
+      "claude-opus-5",
+      "claude-haiku-4-5",
+      "claude-fable-5",
+    ],
   },
   openai: {
     envKey: "OPENAI_API_KEY",
     api: "responses",
-    knownModels: ["gpt-5", "gpt-5-mini", "o3"],
+    knownModels: ["gpt-5.2", "gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini"],
   },
+  // Curated from openrouter's public /models catalog: flagships, a budget
+  // tier, and free slugs — every id verified present and tool-capable. The
+  // live catalog (fetchOpenRouterCatalog) is the complete list.
   openrouter: {
     envKey: "OPENROUTER_API_KEY",
     baseURL: "https://openrouter.ai/api/v1",
     api: "chat",
     knownModels: [
-      "anthropic/claude-sonnet-4",
-      "openai/gpt-5",
-      "moonshotai/kimi-k2",
+      // flagship / frontier coding
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-opus-5",
+      "anthropic/claude-haiku-4.5",
+      "openai/gpt-5.2-codex",
+      "openai/gpt-5.2",
+      "openai/o3",
+      "moonshotai/kimi-k2-thinking",
       "z-ai/glm-4.6",
+      // budget
+      "openai/gpt-5-mini",
+      "openai/gpt-5-nano",
+      "deepseek/deepseek-v3.2",
+      "deepseek/deepseek-v4-flash",
+      "qwen/qwen3-coder",
+      "google/gemini-3.5-flash-lite",
+      "mistralai/mistral-small-3.2-24b-instruct",
+      "mistralai/mistral-nemo",
+      "meta-llama/llama-4-scout",
+      // free
+      "z-ai/glm-5.2:free",
+      "openai/gpt-oss-20b:free",
+      "google/gemma-4-31b-it:free",
     ],
   },
   ollama: {
     api: "chat",
     resolveApiKey: () => ollamaTarget().apiKey,
     resolveBaseURL: () => ollamaTarget().baseURL,
+    probe: probeOllama,
+    probeTarget: () => ollamaTarget().baseURL,
     knownModels: ["llama3.3", "qwen3-coder", "glm-4.6", "gpt-oss:120b"],
   },
   zai: {
@@ -119,11 +235,26 @@ const PROVIDERS: Record<string, ProviderDef> = {
     api: "chat",
     knownModels: ["kimi-k2", "kimi-k2-thinking", "moonshot-v1-128k"],
   },
+  // Verified against the zen gateway's own /models listing.
   opencode: {
     envKey: "OPENCODE_API_KEY",
     baseURL: "https://opencode.ai/zen/v1",
     api: "chat",
-    knownModels: ["claude-sonnet-4", "gpt-5", "kimi-k2"],
+    knownModels: [
+      "claude-sonnet-5",
+      "claude-opus-5",
+      "claude-haiku-4-5",
+      "gpt-5.2-codex",
+      "gpt-5.2",
+      "gpt-5.1-codex-max",
+      "gemini-3.5-flash",
+      "grok-4.6",
+      "kimi-k3",
+      "glm-5.2",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash-free",
+      "nemotron-3-ultra-free",
+    ],
   },
   codex: {
     baseURL: "https://chatgpt.com/backend-api/codex",
@@ -321,7 +452,7 @@ export function defaultModelSpec(): string {
 /* -------------------------------------------------------------------------- */
 
 /** Whether this provider could produce a credential right now. */
-function isAvailable(
+function hasCredential(
   provider: string,
   def: ProviderDef,
   config?: HaxfordConfig,
@@ -339,35 +470,250 @@ function isAvailable(
 }
 
 /**
- * Every model we know about as a "provider/model" spec, flagged with whether
- * its provider currently has credentials. Feeds the TUI model picker.
+ * Sync availability. A probed provider counts as available only once a probe
+ * has actually confirmed its endpoint — an unconfirmed one reads unavailable
+ * and a probe is started so the next call can answer truthfully. Better to
+ * under-report for one render than to offer a model that cannot answer.
  */
-export function listKnownModels(
+function isAvailable(
+  provider: string,
+  def: ProviderDef,
   config?: HaxfordConfig,
-): { spec: string; available: boolean }[] {
-  const out: { spec: string; available: boolean }[] = []
-  const seen = new Set<string>()
+): boolean {
+  if (!hasCredential(provider, def, config)) return false
+  const { probe, probeTarget } = def
+  if (!probe || !probeTarget) return true
 
-  const add = (provider: string, model: string, available: boolean) => {
-    const spec = `${provider}/${model}`
-    if (seen.has(spec)) return
-    seen.add(spec)
-    out.push({ spec, available })
-  }
+  const target = probeTarget()
+  const cached = cachedProbe(provider, target)
+  if (cached !== undefined) return cached
+  void runProbe(provider, probe, target)
+  return false
+}
+
+/** As `isAvailable`, but waits for the probe instead of assuming the worst. */
+async function isAvailableAsync(
+  provider: string,
+  def: ProviderDef,
+  config?: HaxfordConfig,
+): Promise<boolean> {
+  if (!hasCredential(provider, def, config)) return false
+  const { probe, probeTarget } = def
+  if (!probe || !probeTarget) return true
+
+  const target = probeTarget()
+  return cachedProbe(provider, target) ?? (await runProbe(provider, probe, target))
+}
+
+export interface KnownModel {
+  spec: string
+  available: boolean
+}
+
+/** One provider's offered models, paired with how to judge its availability. */
+interface ProviderModels {
+  provider: string
+  def?: ProviderDef
+  /** For providers only the user knows about: a configured key is all we have. */
+  configuredKey?: boolean
+  models: string[]
+}
+
+function providerModels(config?: HaxfordConfig): ProviderModels[] {
+  const groups: ProviderModels[] = []
 
   for (const [provider, def] of Object.entries(PROVIDERS)) {
-    const available = isAvailable(provider, def, config)
-    for (const model of def.knownModels ?? []) add(provider, model, available)
+    groups.push({ provider, def, models: def.knownModels ?? [] })
   }
 
   // Anything the user configured explicitly, including unknown providers.
   for (const [provider, entry] of Object.entries(config?.providers ?? {})) {
+    const models = entry.models ?? []
+    if (models.length === 0) continue
     const def = lookup(provider)
-    const available = def
-      ? isAvailable(provider, def, config)
-      : Boolean(entry.apiKey?.trim())
-    for (const model of entry.models ?? []) add(provider, model, available)
+    groups.push({
+      provider,
+      ...(def ? { def } : { configuredKey: Boolean(entry.apiKey?.trim()) }),
+      models,
+    })
   }
 
+  return groups
+}
+
+function assemble(
+  groups: { group: ProviderModels; available: boolean }[],
+): KnownModel[] {
+  const out: KnownModel[] = []
+  const seen = new Set<string>()
+  for (const { group, available } of groups) {
+    for (const model of group.models) {
+      const spec = `${group.provider}/${model}`
+      if (seen.has(spec)) continue
+      seen.add(spec)
+      out.push({ spec, available })
+    }
+  }
   return out
+}
+
+/**
+ * Every model we know about as a "provider/model" spec, flagged with whether
+ * its provider is usable right now. Feeds the TUI model picker.
+ *
+ * Prefer `listKnownModelsAsync` where the caller can await: providers backed
+ * by a local server (ollama) can only be confirmed by asking, and this sync
+ * form reports them unavailable until a probe has come back.
+ */
+export function listKnownModels(config?: HaxfordConfig): KnownModel[] {
+  return assemble(
+    providerModels(config).map((group) => ({
+      group,
+      available: group.def
+        ? isAvailable(group.provider, group.def, config)
+        : Boolean(group.configuredKey),
+    })),
+  )
+}
+
+/** As `listKnownModels`, but waits for reachability probes to settle. */
+export async function listKnownModelsAsync(
+  config?: HaxfordConfig,
+): Promise<KnownModel[]> {
+  const resolved = await Promise.all(
+    providerModels(config).map(async (group) => ({
+      group,
+      available: group.def
+        ? await isAvailableAsync(group.provider, group.def, config)
+        : Boolean(group.configuredKey),
+    })),
+  )
+  return assemble(resolved)
+}
+
+/* -------------------------------------------------------------------------- */
+/* Live openrouter catalog                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** One entry of openrouter's public catalog, in the units a picker wants. */
+export interface CatalogModel {
+  spec: string
+  label: string
+  contextLength?: number
+  /** USD per million prompt tokens. 0 for free models. */
+  promptPricePerMtok?: number
+  /** USD per million completion tokens. 0 for free models. */
+  completionPricePerMtok?: number
+}
+
+const CATALOG_URL = "https://openrouter.ai/api/v1/models"
+const CATALOG_TTL_MS = 60 * 60 * 1000
+const CATALOG_TIMEOUT_MS = 10_000
+
+let catalogCache: { at: number; models: CatalogModel[] } | undefined
+let catalogInFlight: Promise<CatalogModel[]> | undefined
+
+/** Non-negative finite number from a string or number field, else undefined. */
+function numeric(value: unknown): number | undefined {
+  const n =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value)
+        : NaN
+  return Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
+/** Per-token USD to per-million USD, without float dust like 0.30000000000004. */
+function perMtok(perToken: number | undefined): number | undefined {
+  if (perToken === undefined) return undefined
+  return Math.round(perToken * 1e6 * 1e6) / 1e6
+}
+
+function toCatalogModel(raw: unknown): CatalogModel | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined
+  const entry = raw as {
+    id?: unknown
+    name?: unknown
+    context_length?: unknown
+    pricing?: unknown
+  }
+
+  const id = typeof entry.id === "string" ? entry.id.trim() : ""
+  if (id === "") return undefined
+
+  const contextLength = numeric(entry.context_length)
+  const pricing =
+    typeof entry.pricing === "object" && entry.pricing !== null
+      ? (entry.pricing as Record<string, unknown>)
+      : undefined
+  const prompt = perMtok(numeric(pricing?.["prompt"]))
+  const completion = perMtok(numeric(pricing?.["completion"]))
+
+  // Obviously broken: nothing priced and no context window to speak of.
+  if (prompt === undefined && completion === undefined && !contextLength) {
+    return undefined
+  }
+
+  const label = typeof entry.name === "string" && entry.name.trim() !== ""
+    ? entry.name.trim()
+    : id
+
+  return {
+    spec: `openrouter/${id}`,
+    label,
+    ...(contextLength ? { contextLength } : {}),
+    ...(prompt !== undefined ? { promptPricePerMtok: prompt } : {}),
+    ...(completion !== undefined ? { completionPricePerMtok: completion } : {}),
+  }
+}
+
+/**
+ * openrouter's full public catalog — hundreds of models across every vendor it
+ * fronts. No key required. Cached in-module for an hour; concurrent callers
+ * share one request.
+ *
+ * Never throws: on any failure (offline, timeout, bad payload) this returns an
+ * empty array and the caller falls back to the curated `knownModels` list. A
+ * failure is not cached, so the next call retries.
+ */
+export async function fetchOpenRouterCatalog(): Promise<CatalogModel[]> {
+  if (catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
+    return catalogCache.models
+  }
+  const existing = catalogInFlight
+  if (existing) return existing
+
+  const started = (async (): Promise<CatalogModel[]> => {
+    try {
+      const response = await fetch(CATALOG_URL, {
+        signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
+      })
+      if (!response.ok) return []
+
+      const body: unknown = await response.json()
+      const data =
+        typeof body === "object" && body !== null
+          ? (body as { data?: unknown }).data
+          : undefined
+      if (!Array.isArray(data)) return []
+
+      const models: CatalogModel[] = []
+      for (const raw of data) {
+        const model = toCatalogModel(raw)
+        if (model) models.push(model)
+      }
+
+      if (models.length > 0) catalogCache = { at: Date.now(), models }
+      return models
+    } catch {
+      return []
+    }
+  })()
+
+  catalogInFlight = started
+  whenSettled(started, () => {
+    if (catalogInFlight === started) catalogInFlight = undefined
+  })
+  return started
 }
