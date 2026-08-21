@@ -11,7 +11,7 @@
 import { render } from "ink"
 import React from "react"
 
-import { runAgentLoop } from "./agent/loop.ts"
+import { compactConversation, runAgentLoop } from "./agent/loop.ts"
 import { loadConfig } from "./config/index.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
 import { defaultModelSpec, listKnownModels } from "./providers/index.ts"
@@ -178,11 +178,15 @@ async function runTui(
 
   const bridge = createApprovalBridge()
   const store = createTuiStore(history)
-  const askPermission = createAskHandler({
-    rules: config.permission,
-    mode: args.mode,
-    onAsk: (req) => bridge.askPermission(req),
-  })
+  let mode: Mode = args.mode
+
+  // Built per prompt so a /mode switch applies from the next turn on.
+  const askPermission = () =>
+    createAskHandler({
+      rules: config.permission,
+      mode,
+      onAsk: (req) => bridge.askPermission(req),
+    })
 
   let running = false
   let controller: AbortController | undefined
@@ -215,7 +219,7 @@ async function runTui(
           tools: allTools(),
           config,
           projectInstructions,
-          askPermission,
+          askPermission: askPermission(),
           abort: controller.signal,
         })) {
           store.dispatch(event)
@@ -240,6 +244,33 @@ async function runTui(
     })()
   }
 
+  const onCompact = (): void => {
+    if (running || history.length === 0) return
+    void (async () => {
+      try {
+        const { summary } = await compactConversation({
+          sessionID: session.id,
+          history: [...history],
+          model,
+          cwd,
+          config,
+          projectInstructions,
+        })
+        await appendMessage(cwd, session.id, summary)
+        // Context becomes summary + recent tail; dropping the summarized
+        // messages here keeps repeated /compact from accumulating summaries.
+        history = [summary, ...history.slice(-2)]
+        store.reset(history)
+        store.dispatch({ type: "notice", message: "context compacted" })
+      } catch (error) {
+        store.dispatch({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })()
+  }
+
   const knownModels = [
     ...new Set([model, ...listKnownModels(config).map((m) => m.spec)]),
   ]
@@ -251,16 +282,21 @@ async function runTui(
       store,
       bridge,
       model,
-      mode: args.mode,
+      mode,
       models: knownModels,
       onModelChange: (spec: string) => {
         model = spec
+        app.rerender(buildElement())
+      },
+      onModeChange: (m) => {
+        mode = m
         app.rerender(buildElement())
       },
       onAbort: () => {
         controller?.abort()
         bridge.cancel()
       },
+      onCompact,
       onPrompt,
       onExit: () => {
         bridge.cancel()

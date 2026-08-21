@@ -90,3 +90,56 @@ export function tryReadCodexAuth(): CodexAuth | undefined {
     return undefined
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* opencode credential store                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Path to opencode's credential file: `$OPENCODE_AUTH_PATH`, else
+ * `~/.local/share/opencode/auth.json`.
+ */
+export function opencodeAuthPath(): string {
+  const override = Bun.env.OPENCODE_AUTH_PATH?.trim()
+  if (override) return override
+  return join(homedir(), ".local", "share", "opencode", "auth.json")
+}
+
+/**
+ * Read an API key for `provider` out of opencode's credential store.
+ *
+ * A read-only convenience bridge: if the user already keeps their keys in
+ * opencode, haxford can use them rather than making them configure the same
+ * secrets twice. We never write to this file and never migrate it.
+ *
+ * The file maps a provider id to an entry; only `{ type: "api", key }` entries
+ * are usable — `oauth` and anything else are ignored, since we cannot refresh
+ * or exchange those. Every failure mode (missing file, bad JSON, missing or
+ * malformed entry) returns undefined; this never throws.
+ */
+export function readOpencodeApiKey(provider: string): string | undefined {
+  let raw: string
+  try {
+    raw = readFileSync(opencodeAuthPath(), "utf8")
+  } catch {
+    return undefined
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined
+
+  const entry = (parsed as Record<string, unknown>)[provider]
+  if (typeof entry !== "object" || entry === null) return undefined
+
+  const { type, key } = entry as { type?: unknown; key?: unknown }
+  if (type !== "api") return undefined
+  if (typeof key !== "string") return undefined
+
+  const trimmed = key.trim()
+  return trimmed === "" ? undefined : trimmed
+}

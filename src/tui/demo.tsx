@@ -158,6 +158,7 @@ function main(): void {
   const store = createTuiStore([])
   const bridge = createApprovalBridge()
   let currentModel = MODEL
+  let currentMode: "build" | "auto" | "plan" = MODE
 
   // Seed a welcome notice so the new event path is visible immediately.
   store.dispatch({ type: "notice", message: "haxford demo — type a prompt, /help for commands, /exit to quit" })
@@ -187,6 +188,15 @@ function main(): void {
     store.dispatch({ type: "notice", message: `model switched to ${spec}` })
     rerender(createApp())
   }
+  const onCompact = (): void => {
+    // Host owns compaction; surface a notice to show the path works.
+    store.dispatch({ type: "notice", message: "context compacted (manual)" })
+  }
+  const onModeChange = (m: "build" | "auto" | "plan"): void => {
+    currentMode = m
+    store.dispatch({ type: "notice", message: `mode switched to ${m}` })
+    rerender(createApp())
+  }
   const listSessions = async (): Promise<SessionInfo[]> => {
     // Fake a couple of historical sessions so the picker has content.
     await new Promise((r) => setTimeout(r, 200))
@@ -207,11 +217,13 @@ function main(): void {
       store,
       bridge,
       model: currentModel,
-      mode: MODE,
+      mode: currentMode,
       models: MODELS,
       onPrompt,
       onAbort,
       onModelChange,
+      onCompact,
+      onModeChange,
       onExit,
       onNewSession,
       listSessions,

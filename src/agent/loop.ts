@@ -264,6 +264,62 @@ async function summarize(
   return (await result.text).trim()
 }
 
+/**
+ * Wrap a summary in the synthetic user message that stands in for the
+ * conversation it replaces. Single source of the marker convention — both
+ * auto-compaction and `compactConversation` build their message here.
+ */
+function buildSummaryMessage(
+  sessionID: string,
+  summary: string,
+  id: string,
+): Message {
+  return {
+    id,
+    sessionID,
+    role: "user",
+    parts: [
+      {
+        id: `${id}-text`,
+        type: "text",
+        text: `${COMPACTION_MARKER}\n\n${summary}`,
+      },
+    ],
+    time: { created: Date.now() },
+  }
+}
+
+/**
+ * Summarize a conversation on demand (the TUI's /compact command), using the
+ * same prompt and model-call path as automatic compaction.
+ *
+ * Returns the synthetic summary message only — `history` is never mutated and
+ * nothing is persisted; the host decides what to store and what to drop.
+ * Throws on an unresolvable model, a failed model call, or an empty summary,
+ * which the host surfaces as an error event.
+ */
+export async function compactConversation(input: {
+  sessionID: string
+  history: Message[]
+  model: string
+  cwd: string
+  config?: HaxfordConfig
+  projectInstructions?: string
+}): Promise<{ summary: Message }> {
+  const messages = toModelMessages(input.history)
+  if (messages.length === 0) throw new Error("nothing to compact")
+
+  const model = resolveModel(input.model, input.config)
+  const system = assembleSystemPrompt(input.cwd, input.projectInstructions)
+
+  const summary = await summarize(model, system, messages, undefined)
+  if (!summary) throw new Error("the model returned an empty summary")
+
+  return {
+    summary: buildSummaryMessage(input.sessionID, summary, crypto.randomUUID()),
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Loop                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -370,22 +426,14 @@ export async function* runAgentLoop(
         tail.unshift(finalUserMessage)
       }
 
-      const synthetic: Message = {
-        // Deterministic id: a later compaction in the same session replaces
-        // this message rather than stacking another summary beside it, in any
-        // store that dedupes by message id.
-        id: compactionMessageID(sessionID),
+      // Deterministic id: a later compaction in the same session replaces this
+      // message rather than stacking another summary beside it, in any store
+      // that dedupes by message id.
+      const synthetic = buildSummaryMessage(
         sessionID,
-        role: "user",
-        parts: [
-          {
-            id: `${compactionMessageID(sessionID)}-text`,
-            type: "text",
-            text: `${COMPACTION_MARKER}\n\n${summary}`,
-          },
-        ],
-        time: { created: Date.now() },
-      }
+        summary,
+        compactionMessageID(sessionID),
+      )
 
       conversation.length = 0
       conversation.push(synthetic, ...tail)

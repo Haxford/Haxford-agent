@@ -13,15 +13,92 @@ import { Transcript } from "./components/Transcript.tsx"
 import type { TuiStore } from "./store.ts"
 
 const HELP_TEXT = [
-  "/exit       quit haxford",
-  "/clear      start a fresh session",
-  "/sessions   resume a previous session",
-  "/model      switch the active model",
   "/help       show this help",
+  "/model      switch the active model",
+  "/sessions   resume a previous session",
+  "/compact    compact the conversation now",
+  "/init       analyze the codebase and create/improve AGENTS.md",
+  "/mode       switch permission mode (build | auto | plan)",
+  "/clear      start a fresh session",
+  "/exit       quit haxford",
   "",
   "type a prompt and press Enter to send to the model.",
   "press Esc while running to abort the current turn.",
 ].join("\n")
+
+/** In-app help text; exported so tests can assert the full command listing. */
+export { HELP_TEXT }
+
+/**
+ * Canned instruction sent to the model by /init. Model-visible, so written
+ * for the model to act on: analyze the codebase and produce/improve an
+ * AGENTS.md covering the conventions a contributor needs. Kept short so it
+ * does not dominate the system prompt.
+ */
+const INIT_PROMPT = `Analyze this codebase and create or improve AGENTS.md at the repository root.
+
+AGENTS.md is the shared convention contract for contributors. It must cover:
+- Build, lint, and test commands (the exact invocations a contributor runs).
+- Code style: import style (type-only imports, file extensions, module path
+  conventions), formatting, typing strictness, naming.
+- A short architecture map: the main directories, what each owns, and how the
+  pieces fit together at runtime.
+
+If an AGENTS.md already exists, read it first and edit it in place to fill gaps
+or fix inaccuracies rather than rewriting it wholesale — match its existing
+  tone, structure, and heading style. Keep the whole file under ~40 lines: dense
+  and useful, not exhaustive. Do not invent commands or conventions you cannot
+  verify from the code.`
+
+/** Cycle build -> auto -> plan -> build (for /mode with no arg). */
+export function nextMode(mode: "build" | "auto" | "plan"): "build" | "auto" | "plan" {
+  if (mode === "build") return "auto"
+  if (mode === "auto") return "plan"
+  return "build"
+}
+
+/**
+ * Pure parse of a submitted slash command. Returns the action the app should
+ * take, or { kind: "unknown" } for anything unrecognized. Extracted so the
+ * command table is unit-testable without driving TextInput through a TTY.
+ */
+export type SlashAction =
+  | { kind: "prompt"; text: string }
+  | { kind: "exit" }
+  | { kind: "newSession" }
+  | { kind: "toggleHelp" }
+  | { kind: "sessions" }
+  | { kind: "model" }
+  | { kind: "compact" }
+  | { kind: "mode"; mode: "build" | "auto" | "plan" }
+  | { kind: "notice"; message: string }
+  | { kind: "unknown"; command: string }
+
+/** Decode a submitted line into the action it represents. */
+export function parseSlashCommand(
+  value: string,
+  mode: "build" | "auto" | "plan",
+): SlashAction {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return { kind: "prompt", text: trimmed }
+  if (!trimmed.startsWith("/")) return { kind: "prompt", text: trimmed }
+
+  const cmd = trimmed.toLowerCase()
+  if (cmd === "/exit") return { kind: "exit" }
+  if (cmd === "/clear") return { kind: "newSession" }
+  if (cmd === "/help") return { kind: "toggleHelp" }
+  if (cmd === "/sessions") return { kind: "sessions" }
+  if (cmd === "/model") return { kind: "model" }
+  if (cmd === "/compact") return { kind: "compact" }
+  if (cmd === "/init") return { kind: "prompt", text: INIT_PROMPT }
+  if (cmd === "/mode") return { kind: "mode", mode: nextMode(mode) }
+  if (cmd.startsWith("/mode ")) {
+    const arg = cmd.slice("/mode ".length).trim()
+    if (arg === "build" || arg === "auto" || arg === "plan") return { kind: "mode", mode: arg }
+    return { kind: "notice", message: `unknown mode ${JSON.stringify(arg)}; valid: build | auto | plan` }
+  }
+  return { kind: "unknown", command: trimmed }
+}
 
 /** A pending async load: either loading, ready, or errored. */
 type LoadState =
@@ -43,6 +120,10 @@ export interface HaxfordAppProps {
   onAbort(): void
   /** Host selected a new model spec via /model picker. */
   onModelChange(spec: string): void
+  /** /compact — host runs manual compaction over session history. Optional so a host that has not wired it yet still typechecks; defaults to a no-op that dispatches a notice. */
+  onCompact?(): void
+  /** /mode — host switches the permission mode (host owns rerender). */
+  onModeChange(mode: "build" | "auto" | "plan"): void
   /** /exit or ctrl+c on empty composer */
   onExit(): void
   /** /clear — host starts a fresh session and calls store.reset([]) */
@@ -88,6 +169,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     onPrompt,
     onAbort,
     onModelChange,
+    onCompact,
+    onModeChange,
     onExit,
     onNewSession,
     listSessions,
@@ -146,47 +229,64 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     }
   })
 
+  const resetOverlays = useCallback(
+    () => setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false })),
+    [],
+  )
+
   const submit = useCallback(
     (value: string) => {
       // Ignore submissions while a permission dialog is modal.
       if (pending !== undefined) return
-      const trimmed = value.trim()
-      if (trimmed.length === 0) return
-
-      if (trimmed.startsWith("/")) {
-        const cmd = trimmed.toLowerCase()
-        if (cmd === "/exit") {
+      const action = parseSlashCommand(value, mode)
+      switch (action.kind) {
+        case "prompt":
+          if (action.text.length === 0) return
+          // Non-slash prompt (or /init): the HOST owns creating/persisting the
+          // user message and running the loop.
+          onPrompt(action.text)
+          resetOverlays()
+          return
+        case "exit":
           onExit()
           return
-        }
-        if (cmd === "/clear") {
+        case "newSession":
           onNewSession()
-          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
+          resetOverlays()
           return
-        }
-        if (cmd === "/help") {
+        case "toggleHelp":
           setUi((u) => ({ ...u, showHelp: !u.showHelp, showSessions: { kind: "idle" }, showModelPicker: false }))
           return
-        }
-        if (cmd === "/sessions") {
+        case "sessions":
           setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "loading" }, showModelPicker: false }))
           return
-        }
-        if (cmd === "/model") {
+        case "model":
           setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: true }))
           return
-        }
-        // Unknown command -> show help with a hint about the unknown command.
-        setUi((u) => ({ ...u, showHelp: true, showSessions: { kind: "idle" }, showModelPicker: false }))
-        store.dispatch({ type: "notice", message: `unknown command: ${trimmed}` })
-        return
+        case "compact":
+          // Host owns compaction; it dispatches a notice when done. Fall back to
+          // a no-op notice so the command is safe even before the host wires it.
+          const compact = onCompact ?? (() => {
+            store.dispatch({ type: "notice", message: "compaction not wired in this host" })
+          })
+          compact()
+          resetOverlays()
+          return
+        case "mode":
+          onModeChange(action.mode)
+          resetOverlays()
+          return
+        case "notice":
+          store.dispatch({ type: "notice", message: action.message })
+          resetOverlays()
+          return
+        case "unknown":
+          setUi((u) => ({ ...u, showHelp: true, showSessions: { kind: "idle" }, showModelPicker: false }))
+          store.dispatch({ type: "notice", message: `unknown command: ${action.command}` })
+          return
       }
-
-      // Non-slash prompt: the HOST owns creating/persisting the user message.
-      onPrompt(trimmed)
-      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
     },
-    [onAbort, onExit, onNewSession, onPrompt, pending, state.status, store],
+    [mode, onAbort, onCompact, onExit, onModeChange, onNewSession, onPrompt, pending, resetOverlays, state.status, store],
   )
 
   const running = state.status === "running"

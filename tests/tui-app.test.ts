@@ -3,7 +3,7 @@ import { render } from "ink-testing-library"
 import React from "react"
 
 import type { SessionInfo } from "../src/types/session.ts"
-import { HaxfordApp } from "../src/tui/app.tsx"
+import { HaxfordApp, HELP_TEXT, parseSlashCommand, type SlashAction } from "../src/tui/app.tsx"
 import { createApprovalBridge } from "../src/tui/approval.ts"
 import { createTuiStore } from "../src/tui/store.ts"
 
@@ -25,23 +25,30 @@ function flush(ms = 30): Promise<void> {
 /** Minimal host wiring for render tests. */
 function mount(overrides: {
   models?: string[]
+  mode?: "build" | "auto" | "plan"
   onAbort?: () => void
   onModelChange?: (s: string) => void
+  onModeChange?: (m: "build" | "auto" | "plan") => void
+  onCompact?: () => void
   listSessions?: () => Promise<SessionInfo[]>
 } = {}) {
   const store = createTuiStore([])
   const bridge = createApprovalBridge()
-  const calls: { abort: number; model: string[] } = { abort: 0, model: [] }
+  const calls: { abort: number; model: string[]; mode: ("build" | "auto" | "plan")[]; compact: number } = {
+    abort: 0, model: [], mode: [], compact: 0,
+  }
   const inst = render(
     React.createElement(HaxfordApp, {
       store,
       bridge,
       model: "mock/demo",
-      mode: "build",
+      mode: overrides.mode ?? "build",
       models: overrides.models ?? ["mock/demo", "anthropic/claude", "openai/gpt-4o"],
       onPrompt: () => {},
       onAbort: () => { calls.abort++; overrides.onAbort?.() },
       onModelChange: (s) => { calls.model.push(s); overrides.onModelChange?.(s) },
+      onModeChange: (m) => { calls.mode.push(m); overrides.onModeChange?.(m) },
+      onCompact: () => { calls.compact++; overrides.onCompact?.() },
       onExit: () => {},
       onNewSession: () => {},
       listSessions: overrides.listSessions ?? (async () => []),
@@ -170,5 +177,85 @@ describe("HaxfordApp rendering + app-level input", () => {
     await flush()
     const frame = inst.lastFrame() ?? ""
     expect(frame).toContain("context compacted")
+  })
+})
+
+describe("parseSlashCommand", () => {
+  // /compact delegates to the host; the parse just reports the action.
+  test("/compact decodes to a compact action", () => {
+    expect(parseSlashCommand("/compact", "build")).toEqual({ kind: "compact" })
+  })
+
+  test("/init decodes to a prompt carrying the canned instruction", () => {
+    const action = parseSlashCommand("/init", "build")
+    expect(action.kind).toBe("prompt")
+    const a = action as Extract<SlashAction, { kind: "prompt" }>
+    expect(a.text).toContain("AGENTS.md")
+    expect(a.text.toLowerCase()).toContain("build")
+    expect(a.text.toLowerCase()).toContain("code style")
+    expect(a.text.toLowerCase()).toContain("architecture")
+    // Keep the canned prompt under a reasonable size so it does not dominate.
+    expect(a.text.length).toBeLessThan(4000)
+  })
+
+  test("/mode with no arg cycles build -> auto -> plan -> build", () => {
+    expect(parseSlashCommand("/mode", "build")).toEqual({ kind: "mode", mode: "auto" })
+    expect(parseSlashCommand("/mode", "auto")).toEqual({ kind: "mode", mode: "plan" })
+    expect(parseSlashCommand("/mode", "plan")).toEqual({ kind: "mode", mode: "build" })
+  })
+
+  test("/mode with a valid arg sets the mode directly", () => {
+    expect(parseSlashCommand("/mode build", "auto")).toEqual({ kind: "mode", mode: "build" })
+    expect(parseSlashCommand("/mode auto", "build")).toEqual({ kind: "mode", mode: "auto" })
+    expect(parseSlashCommand("/mode plan", "build")).toEqual({ kind: "mode", mode: "plan" })
+  })
+
+  test("/mode with an invalid arg decodes to a notice with valid options", () => {
+    const action = parseSlashCommand("/mode fast", "build")
+    expect(action.kind).toBe("notice")
+    const a = action as Extract<SlashAction, { kind: "notice" }>
+    expect(a.message).toContain('"fast"')
+    expect(a.message).toContain("build | auto | plan")
+  })
+
+  test("/mode is case-insensitive on the arg", () => {
+    expect(parseSlashCommand("/mode BUILD", "auto")).toEqual({ kind: "mode", mode: "build" })
+    expect(parseSlashCommand("/mode Auto", "build")).toEqual({ kind: "mode", mode: "auto" })
+  })
+
+  test("plain prompt decodes to a prompt action", () => {
+    expect(parseSlashCommand("hello world", "build")).toEqual({ kind: "prompt", text: "hello world" })
+  })
+
+  test("empty/whitespace input decodes to an empty prompt", () => {
+    expect(parseSlashCommand("   ", "build")).toEqual({ kind: "prompt", text: "" })
+  })
+
+  test("existing commands still decode", () => {
+    expect(parseSlashCommand("/exit", "build")).toEqual({ kind: "exit" })
+    expect(parseSlashCommand("/clear", "build")).toEqual({ kind: "newSession" })
+    expect(parseSlashCommand("/help", "build")).toEqual({ kind: "toggleHelp" })
+    expect(parseSlashCommand("/sessions", "build")).toEqual({ kind: "sessions" })
+    expect(parseSlashCommand("/model", "build")).toEqual({ kind: "model" })
+  })
+
+  test("unknown command decodes to unknown with the original command", () => {
+    const action = parseSlashCommand("/frobnicate", "build")
+    expect(action.kind).toBe("unknown")
+    const a = action as Extract<SlashAction, { kind: "unknown" }>
+    expect(a.command).toBe("/frobnicate")
+  })
+})
+
+describe("HaxfordApp /help listing", () => {
+  test("HELP_TEXT lists all eight commands", () => {
+    for (const cmd of ["/help", "/model", "/sessions", "/compact", "/init", "/mode", "/clear", "/exit"]) {
+      expect(HELP_TEXT).toContain(cmd)
+    }
+  })
+
+  test("initial frame mentions /help", () => {
+    const { inst } = mount()
+    expect(inst.lastFrame() ?? "").toContain("/help")
   })
 })

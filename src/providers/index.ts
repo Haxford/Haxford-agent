@@ -2,7 +2,12 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import type { LanguageModel } from "ai"
 import type { HaxfordConfig } from "../types/config.ts"
-import { readCodexAuth, tryReadCodexAuth } from "./auth.ts"
+import {
+  opencodeAuthPath,
+  readCodexAuth,
+  readOpencodeApiKey,
+  tryReadCodexAuth,
+} from "./auth.ts"
 
 /** Used when neither config nor HAXFORD_MODEL specifies a model. */
 export const DEFAULT_MODEL_SPEC = "anthropic/claude-sonnet-5"
@@ -184,6 +189,20 @@ function isThenable(value: unknown): value is Promise<string | undefined> {
 }
 
 /** Credential sources in priority order. May throw (codex) or return async. */
+/**
+ * Last-resort credential lookup in opencode's store, under the name the user
+ * wrote and then the canonical provider name (so `kimi/...` finds a
+ * `moonshot` entry). Providers with their own `resolveApiKey` never reach
+ * here: codex has its own auth file, and ollama's key is optional.
+ */
+function opencodeFallback(provider: string): string | undefined {
+  const canonical = ALIASES[provider] ?? provider
+  return (
+    readOpencodeApiKey(provider) ??
+    (canonical === provider ? undefined : readOpencodeApiKey(canonical))
+  )
+}
+
 function credentialOf(
   def: ProviderDef,
   provider: string,
@@ -192,12 +211,16 @@ function credentialOf(
   const override = config?.providers?.[provider]?.apiKey?.trim()
   if (override) return override
   if (def.resolveApiKey) return def.resolveApiKey()
-  return def.envKey ? env(def.envKey) : undefined
+  const fromEnv = def.envKey ? env(def.envKey) : undefined
+  if (fromEnv) return fromEnv
+  return opencodeFallback(provider)
 }
 
 function missingKeyError(def: ProviderDef, provider: string): Error {
   const where = def.envKey
-    ? `Set ${def.envKey} in the environment or providers.${provider}.apiKey in config.`
+    ? `Set ${def.envKey} in the environment, providers.${provider}.apiKey in config, ` +
+      `or add an { "type": "api", "key": … } entry for ${JSON.stringify(provider)} ` +
+      `in opencode's auth store (${opencodeAuthPath()}).`
     : `Set providers.${provider}.apiKey in config.`
   return new Error(
     `Missing API key for provider ${JSON.stringify(provider)}. ${where}`,
