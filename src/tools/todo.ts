@@ -69,7 +69,9 @@ Usage:
   soon as it is done, before starting the next one — do not batch completions.
 - Only mark an item completed when it actually succeeded. If it failed or is
   blocked, leave it in progress and add a new item describing what is needed.
-- Keep content short and concrete, phrased as the work to do.`,
+- Keep content short and concrete, phrased as the work to do.
+- Write the list BEFORE starting the work, then update it as you go. A list
+  sent only at the end of a task tells the user nothing while it matters.`,
   parameters: writeParameters,
   async execute(args, ctx): Promise<ToolResult> {
     const todos: Todo[] = args.todos.map((todo, index) => ({

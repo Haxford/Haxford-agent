@@ -5,6 +5,8 @@ import React from "react"
 import type { SessionInfo } from "../src/types/session.ts"
 import { HaxfordApp, HELP_TEXT, parseSlashCommand, type SlashAction } from "../src/tui/app.tsx"
 import { createApprovalBridge } from "../src/tui/approval.ts"
+import { SlashAutocomplete } from "../src/tui/components/SlashAutocomplete.tsx"
+import { COMMANDS } from "../src/tui/components/HelpPanel.tsx"
 import { createTuiStore } from "../src/tui/store.ts"
 
 /**
@@ -257,5 +259,36 @@ describe("HaxfordApp /help listing", () => {
   test("initial frame mentions /help", () => {
     const { inst } = mount()
     expect(inst.lastFrame() ?? "").toContain("/help")
+  })
+})
+
+describe("SlashAutocomplete popup", () => {
+  test("renders nothing when there are no matches", () => {
+    const inst = render(React.createElement(SlashAutocomplete, { matches: [], cursor: 0 }))
+    // Null element -> Ink emits an empty/undefined frame (no popup content).
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).not.toContain("/model")
+    expect(frame).not.toContain("▸")
+  })
+
+  test("lists matching commands with descriptions, marks the selected row", () => {
+    const matches = COMMANDS.filter((c) => c.command.startsWith("/m")) // /model, /mode
+    const inst = render(React.createElement(SlashAutocomplete, { matches, cursor: 0 }))
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("/model")
+    expect(frame).toContain("switch the active model")
+    expect(frame).toContain("/mode")
+    expect(frame).toContain("switch permission mode")
+    // First row selected -> cyan ▸
+    expect(frame).toContain("▸")
+  })
+
+  test("selected cursor moves to the second row", () => {
+    const matches = COMMANDS.filter((c) => c.command.startsWith("/m"))
+    const inst = render(React.createElement(SlashAutocomplete, { matches, cursor: 1 }))
+    const lines = (inst.lastFrame() ?? "").split("\n").filter((l) => l.includes("▸"))
+    // Exactly one selected row, and it is the /mode row.
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain("/mode")
   })
 })

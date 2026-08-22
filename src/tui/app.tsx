@@ -1,15 +1,16 @@
 import { Box, Text, useInput } from "ink"
-import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react"
+import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react"
 
 import type { SessionInfo } from "../types/session.ts"
 import type { PermissionRequest } from "../types/tool.ts"
 import type { ApprovalBridge } from "./approval.ts"
 import { Banner, shortCwd } from "./components/Banner.tsx"
 import { Composer } from "./components/Composer.tsx"
-import { HelpPanel, HELP_TEXT } from "./components/HelpPanel.tsx"
+import { HelpPanel, HELP_TEXT, COMMANDS, type CommandRow } from "./components/HelpPanel.tsx"
 import { ModelPicker } from "./components/ModelPicker.tsx"
 import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { SessionPicker } from "./components/SessionPicker.tsx"
+import { SlashAutocomplete } from "./components/SlashAutocomplete.tsx"
 import { StatusBar } from "./components/StatusBar.tsx"
 import { Transcript } from "./components/Transcript.tsx"
 import type { TuiStore } from "./store.ts"
@@ -86,6 +87,29 @@ export function parseSlashCommand(
     return { kind: "notice", message: `unknown mode ${JSON.stringify(arg)}; valid: build | auto | plan` }
   }
   return { kind: "unknown", command: trimmed }
+}
+
+/** Commands that take no argument and can be submitted immediately on accept. */
+export const NO_ARG_COMMANDS = new Set(["/help", "/sessions", "/compact", "/clear", "/exit"])
+
+/** Whether a command token accepts an argument (so autocomplete only completes the token). */
+export function takesArg(command: string): boolean {
+  return !NO_ARG_COMMANDS.has(command)
+}
+
+/** Match commands by case-insensitive prefix; returns the canonical rows. */
+export function matchCommands(prefix: string): CommandRow[] {
+  const p = prefix.trim().toLowerCase()
+  if (p.length === 0 || !p.startsWith("/")) return []
+  return COMMANDS.filter((c) => c.command.startsWith(p) || c.command.toLowerCase().startsWith(p))
+}
+
+/** The next command after moving the cursor with clamping (wraps within 0..n-1). */
+export function clampCursor(cursor: number, n: number): number {
+  if (n <= 0) return 0
+  if (cursor < 0) return n - 1
+  if (cursor >= n) return 0
+  return cursor
 }
 
 /** A pending async load: either loading, ready, or errored. */
@@ -182,6 +206,19 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     showModelPicker: false,
   })
 
+  // Slash autocomplete: tracks the live composer value, matching commands, and
+  // the selected match index. Active only when the value starts with '/'.
+  const [composerValue, setComposerValue] = useState("")
+  const acMatches = useMemo(
+    () => (composerValue.startsWith("/") ? matchCommands(composerValue) : []),
+    [composerValue],
+  )
+  const [acCursor, setAcCursor] = useState(0)
+  const acActive = acMatches.length > 0
+
+  // Reset the popup cursor when the typed value changes.
+  useEffect(() => { setAcCursor(0) }, [composerValue])
+
   // While the sessions picker is open, load sessions lazily once.
   useEffect(() => {
     if (ui.showSessions.kind !== "loading") return
@@ -229,8 +266,9 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     }
     // Tab in the empty-ish, idle, overlay-free composer cycles the permission
     // mode build -> auto -> plan -> build (opencode-style). The host owns the
-    // actual mode state and rerenders.
-    if (key.tab && !running && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker) {
+    // actual mode state and rerenders. Skip when the autocomplete popup is up
+    // (the Composer routes tab to the popup instead).
+    if (key.tab && !running && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker) {
       onModeChange(nextMode(mode))
     }
   })
@@ -325,6 +363,32 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     [onModelChange],
   )
 
+  // --- Slash autocomplete handlers ---
+  const onPopupNavigate = useCallback((dir: "up" | "down") => {
+    setAcCursor((c) => clampCursor(dir === "up" ? c - 1 : c + 1, acMatches.length))
+  }, [acMatches.length])
+
+  const onPopupDismiss = useCallback(() => {
+    // Clearing the leading slash is the natural way to dismiss; the Composer
+    // already routed Esc here, so reset the cursor and let the value stand.
+    setAcCursor(0)
+  }, [])
+
+  const onPopupAccept = useCallback(() => {
+    const row = acMatches[acCursor] ?? acMatches[0]
+    if (row === undefined) return
+    if (!takesArg(row.command)) {
+      // No-arg command: submit immediately.
+      submit(row.command)
+      setComposerValue("")
+    } else {
+      // Arg command: complete the token (with a trailing space for args) and
+      // keep the cursor in the composer so the user can type the argument.
+      const completed = `${row.command} `
+      setComposerValue(completed)
+    }
+  }, [acCursor, acMatches, submit])
+
   const composerPlaceholder = composerDisabled
     ? pending !== undefined
       ? "awaiting approval…"
@@ -387,7 +451,17 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         error={state.error}
         endReason={state.endReason}
       />
-      <Composer disabled={composerDisabled} onSubmit={submit} placeholder={composerPlaceholder} />
+      <Composer
+        disabled={composerDisabled}
+        onSubmit={submit}
+        onValueChange={setComposerValue}
+        placeholder={composerPlaceholder}
+        popupActive={acActive}
+        onPopupNavigate={onPopupNavigate}
+        onPopupAccept={onPopupAccept}
+        onPopupDismiss={onPopupDismiss}
+        autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
+      />
     </Box>
   )
 }

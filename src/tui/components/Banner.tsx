@@ -2,34 +2,18 @@ import { Box, Text } from "ink"
 import React from "react"
 
 /**
- * Startup banner: an original compact mascot + wordmark, shown when the
- * transcript is empty (and after /clear). Kept under ~14 lines total and
- * ASCII-only so borders never break in narrow terminals.
+ * Startup banner, shown when the transcript is empty (and after /clear).
+ *
+ * Deliberately minimal — a single header line (glyph + wordmark + version)
+ * and one dim hint line. No large ASCII art. Matches the pi/opencode school
+ * of restraint: a calm, professional empty state, not a decorative one.
  */
 
-/** The mascot + wordmark as plain lines (exported for tests). */
-export const BANNER_LINES = [
-  "    ╓╖",
-  "   ╓╜ ╙╖    ╔╗",
-  "  ╓╜   ╙╖  ╔╝╚╗",
-  " ╓╜  ▒▒  ╙╖║  ║   __",
-  " ║   ▒▒   ║║  ║  /  )___",
-  " ║   ▒▒   ║╚╗╔╝  \\__|___)",
-  " ╙╖      ╔╜ ╚╝   haxford",
-  "  ╙╖════╔╝",
-  "   ╚════╝",
-]
+/** The package version, shown in the header. */
+export const VERSION = "0.1.0"
 
-/** Render the mascot + wordmark block. */
-export function Mascot(): React.ReactElement {
-  return (
-    <Box flexDirection="column" alignItems="flex-start">
-      {BANNER_LINES.map((line, i) => (
-        <Text key={i} color="magenta" dimColor={i >= 4}>{line}</Text>
-      ))}
-    </Box>
-  )
-}
+/** Header glyph — a small, wide-char-safe mark (no box-drawing that can break). */
+const GLYPH = "◆"
 
 export interface BannerProps {
   model: string
@@ -37,16 +21,16 @@ export interface BannerProps {
   cwd: string
 }
 
-/** Hint line: model · mode · cwd · /help hint. Kept to one wrapped line. */
-function hintLine(model: string, mode: string, cwd: string): string {
-  return `${model} · ${mode} · ${cwd} · /help for commands`
-}
-
+/** Render the minimal header + hint. */
 export function Banner({ model, mode, cwd }: BannerProps): React.ReactElement {
   return (
-    <Box flexDirection="column" gap={1} paddingBottom={1}>
-      <Mascot />
-      <Text dimColor>{hintLine(model, mode, cwd)}</Text>
+    <Box flexDirection="column" gap={0} paddingBottom={1}>
+      <Box gap={1}>
+        <Text color="magenta">{GLYPH}</Text>
+        <Text bold color="magenta">haxford</Text>
+        <Text dimColor>v{VERSION}</Text>
+      </Box>
+      <Text dimColor>{model} · {mode} · {cwd} · /help for commands</Text>
     </Box>
   )
 }

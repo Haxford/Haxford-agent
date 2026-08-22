@@ -47,9 +47,11 @@ How it works:
   relevant paths, any constraints, and exactly what to report back.
 - It runs with the same tools as you EXCEPT task itself, so subagents cannot
   spawn subagents.
-- It CANNOT ask the user anything. Actions that would need approval are
-  refused, so tell it to report findings rather than expecting to make
-  far-reaching changes.
+- It has the SAME permissions as you but CANNOT ask the user anything, so any
+  action that would prompt you for approval is refused outright. In practice a
+  subagent can read, search and list freely; treat writing, editing and
+  running commands as unavailable to it. Ask it to investigate and report,
+  not to change things.
 - It returns ONLY its final message as a plain-text summary. Nothing else
   survives, so say what you want reported — "list the file:line of each call
   site" beats "look into the call sites".
@@ -86,14 +88,19 @@ for work that depends on context only you have.`,
     const tools = sub.tools.filter((tool) => tool.id !== "task")
 
     /**
-     * Subagents are unattended, so nothing may block on the user. Auto mode
-     * honours explicit deny rules and allows the rest; onAsk is a backstop
-     * that refuses rather than suspending on a UI bridge the parent loop is
-     * currently blocking on (which would deadlock).
+     * A subagent runs under its parent's permission mode, never a laxer one.
+     * Anything the parent would have had to ask the user about is refused
+     * here rather than silently allowed: the model chooses when to spawn a
+     * subagent, so a blanket allow would let it route around the approval
+     * the user expects for writes, edits and shell commands.
+     *
+     * Subagents are also unattended, so nothing may block on the user. `onAsk`
+     * refuses instead of suspending on a UI bridge that the parent's own tool
+     * call is currently occupying (which would deadlock).
      */
     const askPermission = createAskHandler({
       ...(sub.config?.permission ? { rules: sub.config.permission } : {}),
-      mode: "auto",
+      mode: sub.mode,
       onAsk: () => "deny",
     })
 
@@ -116,6 +123,8 @@ for work that depends on context only you have.`,
         config: { ...(sub.config ?? {}), maxTurns: SUBAGENT_MAX_TURNS },
         abort: ctx.abort,
         askPermission,
+        mode: sub.mode,
+        ...(sub.retry ? { retry: sub.retry } : {}),
       })
 
       // Drain the subagent's stream — its events are internal, not the

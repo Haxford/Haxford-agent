@@ -139,6 +139,7 @@ async function runPrint(
   const loop = runAgentLoop({
     sessionID: session.id,
     agent: "build",
+    mode: args.mode,
     cwd,
     userText: args.prompt,
     history,
@@ -211,6 +212,8 @@ async function runTui(
         for await (const event of runAgentLoop({
           sessionID: session.id,
           agent: "build",
+          // Subagents and permission checks inherit this mode.
+          mode,
           cwd,
           // The user turn is already the tail of history — passing it again
           // as userText would duplicate it in the request.

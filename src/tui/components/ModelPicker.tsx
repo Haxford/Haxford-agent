@@ -1,5 +1,8 @@
-import { Box, Text, useInput } from "ink"
+import { Box, Text, useInput, useStdout } from "ink"
 import React, { useMemo, useState } from "react"
+
+/** Default rows per page when terminal height is unknown. */
+const DEFAULT_PAGE_SIZE = 20
 
 /** A single selectable model entry. */
 export interface ModelOption {
@@ -39,6 +42,43 @@ export function providerOf(spec: string): string {
 export function modelOf(spec: string): string {
   const slash = spec.indexOf("/")
   return slash <= 0 ? spec : spec.slice(slash + 1)
+}
+
+/**
+ * Filter entries by a case-insensitive substring across spec + label. Returns
+ * entries (not groups) in the same available-first, alphabetical order the
+ * grouping would produce. Exported for unit testing.
+ */
+export function filterModels(models: ModelOption[], query: string): ModelOption[] {
+  const q = query.trim().toLowerCase()
+  if (q.length === 0) {
+    // Unfiltered: available-first, alphabetical by spec.
+    return [...models].sort((a, b) => {
+      if (a.available !== b.available) return a.available ? -1 : 1
+      return a.spec < b.spec ? -1 : a.spec > b.spec ? 1 : 0
+    })
+  }
+  const matches = models.filter((m) => {
+    const hay = `${m.spec} ${m.label ?? ""}`.toLowerCase()
+    return hay.includes(q)
+  })
+  return matches.sort((a, b) => {
+    if (a.available !== b.available) return a.available ? -1 : 1
+    return a.spec < b.spec ? -1 : a.spec > b.spec ? 1 : 0
+  })
+}
+
+/** Number of pages for a list of size `n` at `pageSize` rows per page (min 1). */
+export function pageCount(n: number, pageSize: number): number {
+  if (pageSize <= 0) return 1
+  return Math.max(1, Math.ceil(n / pageSize))
+}
+
+/** The slice of a flat list for page `page` (0-based) at `pageSize`. */
+export function paginate<T>(list: T[], page: number, pageSize: number): T[] {
+  const start = page * pageSize
+  if (start < 0 || start >= list.length) return []
+  return list.slice(start, start + pageSize)
 }
 
 export interface ProviderGroup {
@@ -136,82 +176,116 @@ export function ModelPicker({
   onSelect,
   onCancel,
 }: ModelPickerProps): React.ReactElement {
-  const groups = useMemo(() => groupModels(normalizeModels(models)), [models])
-  // Flat list of selectable entries (headers are not selectable) for cursor math.
-  const flat = useMemo(
-    () => groups.flatMap((g) => g.entries),
-    [groups],
+  const { stdout } = useStdout()
+  // Reserve room for header + footer + border; never exceed 20.
+  const pageSize = Math.min(DEFAULT_PAGE_SIZE, Math.max(5, (stdout?.rows ?? DEFAULT_PAGE_SIZE) - 6))
+
+  const all = useMemo(() => normalizeModels(models), [models])
+
+  const [query, setQuery] = useState("")
+  const [page, setPage] = useState(0)
+  const [cursor, setCursor] = useState(0)
+
+  // Filtered flat list (available-first, alphabetical) for the current query.
+  const filtered = useMemo(() => filterModels(all, query), [all, query])
+  const pages = pageCount(filtered.length, pageSize)
+  // Clamp page into range when the filter shrinks the list.
+  const safePage = Math.min(page, pages - 1)
+  const pageEntries = useMemo(
+    () => paginate(filtered, safePage, pageSize),
+    [filtered, safePage, pageSize],
   )
+  const safeCursor = pageEntries.length === 0 ? 0 : Math.min(cursor, pageEntries.length - 1)
 
-  const [cursor, setCursor] = useState(() => {
-    const idx = flat.findIndex((m) => m.spec === current)
-    return idx >= 0 ? idx : 0
-  })
-  const safeCursor = flat.length === 0 ? 0 : Math.min(cursor, flat.length - 1)
-
-  useInput((_, key) => {
-    if (flat.length === 0) {
-      if (key.escape) onCancel()
+  useInput((input, key) => {
+    if (key.escape) {
+      onCancel()
       return
     }
+    // Printable characters filter live. Backspace is handled by TextInput; we
+    // only intercept navigation here.
     if (key.upArrow) {
-      setCursor((c) => (c <= 0 ? flat.length - 1 : c - 1))
+      setCursor((c) => (c <= 0 ? pageEntries.length - 1 : c - 1))
     } else if (key.downArrow) {
-      setCursor((c) => (c >= flat.length - 1 ? 0 : c + 1))
+      setCursor((c) => (c >= pageEntries.length - 1 ? 0 : c + 1))
+    } else if (key.leftArrow || key.pageUp) {
+      setPage((p) => (p <= 0 ? pages - 1 : p - 1))
+      setCursor(0)
+    } else if (key.rightArrow || key.pageDown) {
+      setPage((p) => (p >= pages - 1 ? 0 : p + 1))
+      setCursor(0)
     } else if (key.return) {
-      const sel = flat[safeCursor]
+      const sel = pageEntries[safeCursor]
       if (sel !== undefined && sel.available) onSelect(sel.spec)
-    } else if (key.escape) {
-      onCancel()
+    } else if (input && !key.ctrl && !key.meta && /^[a-zA-Z0-9 _./-]$/.test(input)) {
+      // Live filter by substring; reset cursor + page.
+      setQuery((q) => q + input)
+      setPage(0)
+      setCursor(0)
+    } else if (key.backspace || key.delete) {
+      setQuery((q) => q.slice(0, -1))
+      setPage(0)
+      setCursor(0)
     }
   })
 
-  let entryIdx = 0
+  const footer =
+    filtered.length === 0
+      ? `no results${query ? ` for ${JSON.stringify(query)}` : ""} · type to filter`
+      : `${filtered.length} result${filtered.length === 1 ? "" : "s"} · page ${safePage + 1}/${pages}${query ? ` · filter: ${query}` : ""} · type to filter`
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={2} paddingY={1}>
       <Box gap={2}>
         <Text bold color="magenta">{"switch model"}</Text>
-        <Text dimColor>{"↑/↓ navigate · enter select · esc cancel"}</Text>
+        <Text dimColor>{"↑/↓ navigate · ←/→ pg · enter select · esc cancel · type to filter"}</Text>
       </Box>
-      {flat.length === 0 ? (
+      {all.length === 0 ? (
         <Text dimColor>{"no models configured"}</Text>
+      ) : pageEntries.length === 0 ? (
+        <Text dimColor>{"no matches"}</Text>
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {groups.map((g) => (
-            <Box key={g.provider} flexDirection="column">
-              <Text dimColor bold>{g.provider}</Text>
-              {g.entries.map((opt) => {
-                const i = entryIdx++
-                const selected = i === safeCursor
-                const isCurrent = opt.spec === current
-                const meta = formatModelMeta(opt)
-                const label = displayLabel(opt)
-                return (
-                  <Box key={opt.spec} flexDirection="row" gap={1}>
-                    <Text color={selected ? "magenta" : "gray"}>
-                      {selected ? "▸" : " "}
-                    </Text>
-                    <Text
-                      bold={selected}
-                      color={opt.available ? (selected ? "white" : undefined) : "gray"}
-                    >
-                      {label}
-                    </Text>
-                    {isCurrent ? <Text color="green">{"(current)"}</Text> : null}
-                    {!opt.available ? <Text color="gray">{"needs setup"}</Text> : null}
-                    {meta.length > 0 ? (
-                      <Box flexGrow={1}>
-                        <Text dimColor color={opt.available ? undefined : "gray"}> {meta}</Text>
-                      </Box>
-                    ) : null}
-                  </Box>
-                )
-              })}
-            </Box>
-          ))}
+          {/* Group the visible page by provider, preserving the flat cursor. */}
+          {(() => {
+            const groups = groupModels(pageEntries)
+            let entryIdx = 0
+            return groups.map((g) => (
+              <Box key={g.provider} flexDirection="column">
+                <Text dimColor bold>{g.provider}</Text>
+                {g.entries.map((opt) => {
+                  const i = entryIdx++
+                  const selected = i === safeCursor
+                  const isCurrent = opt.spec === current
+                  const meta = formatModelMeta(opt)
+                  const label = displayLabel(opt)
+                  return (
+                    <Box key={opt.spec} flexDirection="row" gap={1}>
+                      <Text color={selected ? "magenta" : "gray"}>
+                        {selected ? "▸" : " "}
+                      </Text>
+                      <Text
+                        bold={selected}
+                        color={opt.available ? (selected ? "white" : undefined) : "gray"}
+                      >
+                        {label}
+                      </Text>
+                      {isCurrent ? <Text color="green">{"(current)"}</Text> : null}
+                      {!opt.available ? <Text color="gray">{"needs setup"}</Text> : null}
+                      {meta.length > 0 ? (
+                        <Box flexGrow={1}>
+                          <Text dimColor color={opt.available ? undefined : "gray"}> {meta}</Text>
+                        </Box>
+                      ) : null}
+                    </Box>
+                  )
+                })}
+              </Box>
+            ))
+          })()}
         </Box>
       )}
+      <Text dimColor>{footer}</Text>
     </Box>
   )
 }

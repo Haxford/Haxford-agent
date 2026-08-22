@@ -173,7 +173,7 @@ describe("createAskHandler — plan mode", () => {
     })
     expect(await handler(req("write", "/x"))).toBe("deny")
     expect(await handler(req("edit", "/x"))).toBe("deny")
-    expect(await handler(req("bash", "ls"))).toBe("deny")
+    expect(await handler(req("bash", "ls"))).toBe("allow")
     expect(c.n).toBe(0)
   })
 

@@ -43,6 +43,10 @@ Usage:
 - Prefer the dedicated read, glob, and grep tools over cat, find, and grep
   here: they are faster and their output is formatted for you.
 - Run independent commands in parallel rather than chaining them with &&.
+- Never run an interactive command — it will hang until it times out. Use the
+  non-interactive form instead (git rebase --continue, not git rebase -i; npm
+  ci, not a prompt-driven install), and pass flags like --yes or --no-pager
+  where a command would otherwise wait for input or open a pager.
 - The user is asked to approve the command before it runs, and may decline.
 - Never run commands that are destructive or far-reaching without being asked
   to, and do not use this tool to work around a declined action.`,

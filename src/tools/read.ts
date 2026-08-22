@@ -48,7 +48,13 @@ Usage:
 - Binary files are refused; do not retry them.
 - You MUST read a file before writing over it or editing it.
 - Prefer reading several related files in parallel in a single step rather
-  than one at a time.`,
+  than one at a time.
+- Read only what you need. When you already know which part of a large file
+  matters, pass offset/limit or grep for it instead of pulling in the whole
+  file — everything you read stays in context for the rest of the session.
+- Do NOT re-read a file to confirm an edit you just made succeeded. edit and
+  write report their own failures; a clean result means the change is on
+  disk.`,
   parameters,
   async execute(args, ctx): Promise<ToolResult> {
     const invalid = checkAbsolute(args.filePath)
@@ -61,7 +67,9 @@ Usage:
       if (!(await file.exists())) {
         return {
           title: `read ${path}`,
-          output: `Error: file not found: ${path}`,
+          output:
+            `Error: file not found: ${path}. Check the path is right — ` +
+            `use glob to locate the file by name rather than guessing another path.`,
         }
       }
       if (await looksBinary(path)) {

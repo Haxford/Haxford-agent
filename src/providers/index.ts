@@ -211,7 +211,7 @@ const PROVIDERS: Record<string, ProviderDef> = {
       "meta-llama/llama-4-scout",
       // free
       "z-ai/glm-5.2:free",
-      "openai/gpt-oss-20b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
       "google/gemma-4-31b-it:free",
     ],
   },

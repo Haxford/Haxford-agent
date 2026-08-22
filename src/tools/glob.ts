@@ -52,7 +52,11 @@ Usage:
       if (found.length === 0) {
         return {
           title: `glob ${args.pattern}`,
-          output: `No files matched ${args.pattern} under ${root}.`,
+          output:
+            `No files matched ${args.pattern} under ${root}. ` +
+            `Patterns are matched against the whole relative path, so a bare ` +
+            `"*.ts" only matches the top level — use "**/*.ts" to search ` +
+            `subdirectories. To search file CONTENTS instead, use grep.`,
           metadata: { pattern: args.pattern, root, count: 0 },
         }
       }

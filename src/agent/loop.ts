@@ -4,6 +4,7 @@ import {
   type ModelMessage,
   type ToolSet,
 } from "ai"
+import type { Mode } from "../permission/engine.ts"
 import { resolveModel } from "../providers/index.ts"
 import type { HaxfordConfig } from "../types/config.ts"
 import type { AgentEvent, LoopEndReason } from "../types/events.ts"
@@ -29,8 +30,23 @@ import {
   estimateTokens,
 } from "./context.ts"
 import { assembleSystemPrompt } from "./prompt.ts"
+import {
+  DEFAULT_RETRY_POLICY,
+  planRetry,
+  retryNoticeText,
+  sleepWithAbort,
+  withRetry,
+  type RetryPolicy,
+} from "./retry.ts"
 
 const DEFAULT_MAX_TURNS = 100
+/**
+ * The AI SDK retries "retryable" API errors itself by default. We turn that
+ * off so our own classifier owns the decision: it distinguishes throttling
+ * from an exhausted account, surfaces each wait as a notice instead of
+ * stalling silently, and honours the run's abort signal while waiting.
+ */
+const SDK_RETRIES = 0
 const DEFAULT_COMPACT_AT = 0.9
 /** Messages kept verbatim after the summary. */
 const COMPACT_TAIL = 2
@@ -51,6 +67,15 @@ export interface AgentLoopInput {
   projectInstructions?: string
   /** Gate for tool actions. Defaults to allowing everything. */
   askPermission?: (request: PermissionRequest) => Promise<PermissionDecision>
+  /**
+   * The permission posture this run was started with. Only used to give
+   * subagents the same posture as their parent — the loop itself gates
+   * through `askPermission`. Defaults to the safest interactive mode, so an
+   * unattended subagent cannot act more freely than its parent by accident.
+   */
+  mode?: Mode
+  /** Transient-failure policy for model calls. Defaults to 3 attempts. */
+  retry?: RetryPolicy
 }
 
 /* -------------------------------------------------------------------------- */
@@ -215,6 +240,14 @@ export interface SubagentContext {
   config?: HaxfordConfig
   /** The parent's tool list; task removes itself from it to prevent nesting. */
   tools: Tool[]
+  /**
+   * The parent's permission mode, so a subagent is bound by the same rules.
+   * A subagent must never be able to do what its parent would have had to ask
+   * the user about.
+   */
+  mode: Mode
+  /** The parent's retry policy, inherited so subagents are as resilient. */
+  retry?: RetryPolicy
 }
 
 /** ToolContext as the loop actually builds it. */
@@ -259,9 +292,32 @@ async function summarize(
     system,
     messages: [...messages, { role: "user", content: COMPACTION_PROMPT }],
     ...(abort ? { abortSignal: abort } : {}),
+    maxRetries: SDK_RETRIES,
     onError: () => {},
   })
   return (await result.text).trim()
+}
+
+/**
+ * Summarize with the shared transient-failure policy. Compaction is a plain
+ * request/response call, so unlike a streamed turn it can be retried wholesale
+ * without any risk of showing the user duplicated output.
+ */
+async function summarizeWithRetry(
+  model: Parameters<typeof streamText>[0]["model"],
+  system: string,
+  messages: ModelMessage[],
+  abort: AbortSignal | undefined,
+  policy: RetryPolicy | undefined,
+  onRetry?: (message: string) => void,
+): Promise<string> {
+  return withRetry(() => summarize(model, system, messages, abort), {
+    ...(policy ? { policy } : {}),
+    ...(abort ? { signal: abort } : {}),
+    ...(onRetry
+      ? { onRetry: (notice) => onRetry(retryNoticeText(notice)) }
+      : {}),
+  })
 }
 
 /**
@@ -305,6 +361,8 @@ export async function compactConversation(input: {
   cwd: string
   config?: HaxfordConfig
   projectInstructions?: string
+  /** Transient-failure policy for the summarization call. */
+  retry?: RetryPolicy
 }): Promise<{ summary: Message }> {
   const messages = toModelMessages(input.history)
   if (messages.length === 0) throw new Error("nothing to compact")
@@ -312,7 +370,13 @@ export async function compactConversation(input: {
   const model = resolveModel(input.model, input.config)
   const system = assembleSystemPrompt(input.cwd, input.projectInstructions)
 
-  const summary = await summarize(model, system, messages, undefined)
+  const summary = await summarizeWithRetry(
+    model,
+    system,
+    messages,
+    undefined,
+    input.retry,
+  )
   if (!summary) throw new Error("the model returned an empty summary")
 
   return {
@@ -340,6 +404,10 @@ export async function* runAgentLoop(
 ): AsyncGenerator<AgentEvent, LoopEndReason> {
   const { sessionID, agent, cwd, model: modelSpec, abort } = input
   const maxTurns = input.config?.maxTurns ?? DEFAULT_MAX_TURNS
+  const retryPolicy = input.retry ?? DEFAULT_RETRY_POLICY
+  // Default to the strictest interactive posture: a caller that forgets to
+  // say what mode it is in must not thereby grant subagents free rein.
+  const mode: Mode = input.mode ?? "build"
 
   const finish = function* (reason: LoopEndReason): Generator<AgentEvent> {
     yield { type: "loop.end", reason }
@@ -368,6 +436,8 @@ export async function* runAgentLoop(
       model: modelSpec,
       ...(input.config ? { config: input.config } : {}),
       tools: input.tools ?? [],
+      mode,
+      retry: retryPolicy,
     },
   }
   const toolSet =
@@ -417,7 +487,18 @@ export async function* runAgentLoop(
     const percent = Math.round((pressure / limit) * 100)
 
     try {
-      const summary = await summarize(model, system, modelMessages, abort)
+      const pending: string[] = []
+      const summary = await summarizeWithRetry(
+        model,
+        system,
+        modelMessages,
+        abort,
+        retryPolicy,
+        (text) => pending.push(text),
+      )
+      for (const text of pending) {
+        yield { type: "notice", message: `compaction ${text}` }
+      }
       if (!summary) throw new Error("model returned an empty summary")
 
       const tail = conversation.slice(-COMPACT_TAIL)
@@ -496,11 +577,14 @@ export async function* runAgentLoop(
       time: { created: Date.now() },
     }
     const snapshot = (): Message => ({ ...message, parts: [...message.parts] })
-    const partEvent = (part: Part): AgentEvent => ({
-      type: "part.updated",
-      messageID: message.id,
-      part: { ...part },
-    })
+    // Set whenever anything derived from the model's output has been handed
+    // to the consumer. Once that happens the turn can no longer be retried:
+    // a second attempt would stream a second copy of the same answer.
+    let emitted = false
+    const partEvent = (part: Part): AgentEvent => {
+      emitted = true
+      return { type: "part.updated", messageID: message.id, part: { ...part } }
+    }
 
     yield { type: "message.updated", message: snapshot() }
 
@@ -545,7 +629,15 @@ export async function* runAgentLoop(
     let usage: TokenUsage | undefined
     let outcome: TurnOutcome = "end_turn"
     const startedAt = new Map<string, number>()
+    /** The raw error behind `outcome === "error"`, for retry classification. */
+    let failure: unknown
 
+    /**
+     * Attempt loop. A turn that fails transiently *before* producing any
+     * visible output is retried with backoff; once the user has seen part of
+     * the answer we stop, because there is no way to un-show it.
+     */
+    for (let attempt = 1; ; attempt++) {
     try {
       const result = streamText({
         model,
@@ -553,6 +645,7 @@ export async function* runAgentLoop(
         messages: toModelMessages(conversation),
         ...(toolSet ? { tools: toolSet } : {}),
         ...(abort ? { abortSignal: abort } : {}),
+        maxRetries: SDK_RETRIES,
         // streamText's default onError writes to console.error, which would
         // corrupt the TUI render. Errors reach the caller as AgentEvents.
         onError: () => {},
@@ -568,6 +661,7 @@ export async function* runAgentLoop(
             if (!chunk.text) break
             const part = openText_(chunk.id)
             part.text += chunk.text
+            emitted = true
             yield {
               type: "part.delta",
               messageID: message.id,
@@ -595,6 +689,7 @@ export async function* runAgentLoop(
             if (!chunk.text) break
             const part = openReasoning_(chunk.id)
             part.text += chunk.text
+            emitted = true
             yield {
               type: "part.delta",
               messageID: message.id,
@@ -675,6 +770,7 @@ export async function* runAgentLoop(
             // with no preceding error chunk. Without this the turn would be
             // reported as a normal end_turn and the failure swallowed.
             if (chunk.finishReason === "error") {
+              failure = failure ?? new Error(message.error ?? "provider reported an error")
               message.error =
                 message.error ??
                 "The model stream finished with an error (finishReason: error) " +
@@ -692,6 +788,7 @@ export async function* runAgentLoop(
               message.error =
                 "The model stream ended before returning any content " +
                 "(the connection was likely interrupted)."
+              failure = new Error(message.error)
               outcome = "error"
             }
             break
@@ -707,6 +804,7 @@ export async function* runAgentLoop(
               outcome = "aborted"
               break
             }
+            failure = chunk.error
             message.error = errorMessage(chunk.error)
             outcome = "error"
             break
@@ -719,9 +817,36 @@ export async function* runAgentLoop(
       if (isAbort(error, abort)) {
         outcome = "aborted"
       } else {
+        failure = error
         message.error = errorMessage(error)
         outcome = "error"
       }
+    }
+
+      if (outcome !== "error" || emitted) break
+
+      const plan = planRetry(failure, attempt, retryPolicy, abort)
+      if (!plan) break
+
+      yield { type: "notice", message: retryNoticeText(plan) }
+      await sleepWithAbort(plan.delayMs, abort)
+      if (abort?.aborted) {
+        outcome = "aborted"
+        break
+      }
+
+      // Discard everything the failed attempt built. Safe precisely because
+      // none of it was emitted — the consumer never saw this message have
+      // any content, so rebuilding it from scratch is invisible.
+      message.parts.length = 0
+      delete message.error
+      openText.clear()
+      openReasoning.clear()
+      openTool.clear()
+      startedAt.clear()
+      usage = undefined
+      failure = undefined
+      outcome = "end_turn"
     }
 
     // Flush anything the provider left open (error or abort mid-stream).

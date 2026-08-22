@@ -9,15 +9,19 @@ import {
 } from "../src/tui/components/StatusBar.tsx"
 import {
   displayLabel,
+  filterModels,
   formatCtx,
   formatModelMeta,
   formatPrice,
   groupModels,
   modelOf,
   normalizeModels,
+  pageCount,
+  paginate,
   providerOf,
   type ModelOption,
 } from "../src/tui/components/ModelPicker.tsx"
+import { clampCursor, matchCommands, NO_ARG_COMMANDS, takesArg } from "../src/tui/app.tsx"
 
 describe("Banner.shortCwd", () => {
   test("returns the basename", () => {
@@ -195,5 +199,101 @@ describe("ModelPicker.displayLabel", () => {
   })
   test("blank label falls back to spec tail", () => {
     expect(displayLabel({ spec: "anthropic/claude", available: true, label: "   " })).toBe("claude")
+  })
+})
+
+describe("ModelPicker.filterModels", () => {
+  const models: ModelOption[] = [
+    { spec: "anthropic/claude-sonnet", available: true, label: "Sonnet" },
+    { spec: "anthropic/claude-opus", available: false, label: "Opus" },
+    { spec: "openai/gpt-5", available: true },
+  ]
+  test("empty query returns all, available-first then alphabetical", () => {
+    const out = filterModels(models, "")
+    expect(out.map((m) => m.spec)).toEqual([
+      "anthropic/claude-sonnet", // available, alphabetical
+      "openai/gpt-5",            // available
+      "anthropic/claude-opus",   // unavailable last
+    ])
+  })
+  test("substring matches across spec + label, case-insensitive", () => {
+    expect(filterModels(models, "sonnet").map((m) => m.spec)).toEqual(["anthropic/claude-sonnet"])
+    expect(filterModels(models, "GPT").map((m) => m.spec)).toEqual(["openai/gpt-5"])
+    expect(filterModels(models, "opus").map((m) => m.spec)).toEqual(["anthropic/claude-opus"])
+  })
+  test("no matches -> []", () => {
+    expect(filterModels(models, "zzz")).toEqual([])
+  })
+  test("available-first within filtered results", () => {
+    const mixed: ModelOption[] = [
+      { spec: "a/x", available: false },
+      { spec: "a/y", available: true },
+    ]
+    expect(filterModels(mixed, "a").map((m) => m.spec)).toEqual(["a/y", "a/x"])
+  })
+})
+
+describe("ModelPicker.pageCount / paginate", () => {
+  test("pageCount", () => {
+    expect(pageCount(0, 20)).toBe(1)
+    expect(pageCount(1, 20)).toBe(1)
+    expect(pageCount(20, 20)).toBe(1)
+    expect(pageCount(21, 20)).toBe(2)
+    expect(pageCount(60, 20)).toBe(3)
+    expect(pageCount(10, 0)).toBe(1) // guard
+  })
+  test("paginate returns the slice for a page", () => {
+    const list = Array.from({ length: 50 }, (_, i) => i)
+    expect(paginate(list, 0, 20)).toHaveLength(20)
+    expect(paginate(list, 0, 20)[0]).toBe(0)
+    expect(paginate(list, 1, 20)).toHaveLength(20)
+    expect(paginate(list, 1, 20)[0]).toBe(20)
+    expect(paginate(list, 2, 20)).toHaveLength(10)
+    expect(paginate(list, 2, 20)[0]).toBe(40)
+    expect(paginate(list, 3, 20)).toEqual([]) // out of range
+  })
+})
+
+describe("Slash autocomplete: matchCommands", () => {
+  test("only matches when prefix starts with /", () => {
+    expect(matchCommands("hello")).toEqual([])
+    expect(matchCommands("")).toEqual([])
+  })
+  test("exact / and short prefixes match all", () => {
+    expect(matchCommands("/").length).toBe(8)
+    expect(matchCommands("/m").map((r) => r.command)).toEqual(["/model", "/mode"])
+  })
+  test("case-insensitive", () => {
+    expect(matchCommands("/HELP").map((r) => r.command)).toEqual(["/help"])
+    expect(matchCommands("/Mo").map((r) => r.command)).toEqual(["/model", "/mode"])
+  })
+  test("no match -> []", () => {
+    expect(matchCommands("/zzz")).toEqual([])
+  })
+})
+
+describe("Slash autocomplete: takesArg / NO_ARG_COMMANDS", () => {
+  test("no-arg commands are recognized", () => {
+    expect(NO_ARG_COMMANDS.has("/help")).toBe(true)
+    expect(NO_ARG_COMMANDS.has("/sessions")).toBe(true)
+    expect(NO_ARG_COMMANDS.has("/compact")).toBe(true)
+    expect(NO_ARG_COMMANDS.has("/clear")).toBe(true)
+    expect(NO_ARG_COMMANDS.has("/exit")).toBe(true)
+  })
+  test("takesArg is false for no-arg commands, true otherwise", () => {
+    expect(takesArg("/help")).toBe(false)
+    expect(takesArg("/exit")).toBe(false)
+    expect(takesArg("/model")).toBe(true)
+    expect(takesArg("/mode")).toBe(true)
+    expect(takesArg("/init")).toBe(true)
+  })
+})
+
+describe("Slash autocomplete: clampCursor", () => {
+  test("wraps within 0..n-1", () => {
+    expect(clampCursor(1, 5)).toBe(1)
+    expect(clampCursor(-1, 5)).toBe(4)  // wraps to end
+    expect(clampCursor(5, 5)).toBe(0)  // wraps to start
+    expect(clampCursor(0, 0)).toBe(0)  // empty list
   })
 })
