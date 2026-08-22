@@ -13,6 +13,16 @@ import React from "react"
 
 import { compactConversation, runAgentLoop } from "./agent/loop.ts"
 import { contextLimit } from "./agent/context.ts"
+import {
+  ensureBuiltinAgents,
+  getAgents,
+  globalAgentsDir,
+  pickMode,
+  pickModel,
+  filterToolsByAllowlist,
+  resolveAgent,
+  type NamedAgent,
+} from "./agent/agents.ts"
 import { loadConfig, saveGlobalProviderCredential } from "./config/index.ts"
 import { loadProjectModel, saveProjectModel } from "./config/state.ts"
 import { loadExtensibility, reloadExtensions, type ExtensibilityState } from "./extend/index.ts"
@@ -37,6 +47,7 @@ import type { HaxfordConfig } from "./types/config.ts"
 import type { AgentEvent, LoopEndReason } from "./types/events.ts"
 import type { Message } from "./types/message.ts"
 import type { SessionInfo } from "./types/session.ts"
+import type { Tool } from "./types/tool.ts"
 
 const HELP = `haxford — terminal AI agent harness
 
@@ -49,6 +60,7 @@ Usage:
 Options:
   -m, --model <spec>           provider/model (default: config or deepseek/deepseek-chat-v3.1)
       --mode <mode>            build | auto | plan  (default: build)
+      --agent <name>           run as a named agent from .haxford/agents/ or ~/.haxford/agents/
   -p, --print                  Non-interactive print mode
   -c, --continue               Resume latest session
   -s, --session <id>           Resume session by id
@@ -59,6 +71,9 @@ interface CliArgs {
   prompt: string
   model?: string
   mode: Mode
+  /** True when the user passed --mode explicitly; beats a named agent's mode. */
+  modeSet: boolean
+  agent?: string
   print: boolean
   cont: boolean
   session?: string
@@ -71,6 +86,7 @@ function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     prompt: "",
     mode: "build",
+    modeSet: false,
     print: false,
     cont: false,
     help: false,
@@ -87,9 +103,13 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "-s" || a === "--session") args.session = argv[++i]
     else if (a === "-v" || a === "--version") args.version = true
     else if (a === "update") args.update = true
+    else if (a === "--agent") args.agent = argv[++i]
     else if (a === "--mode") {
       const m = argv[++i]
-      if (m === "build" || m === "auto" || m === "plan") args.mode = m
+      if (m === "build" || m === "auto" || m === "plan") {
+        args.mode = m
+        args.modeSet = true
+      }
     } else words.push(a)
   }
   args.prompt = words.join(" ")
@@ -152,14 +172,16 @@ async function runPrint(
   args: CliArgs,
   config: HaxfordConfig,
   projectInstructions: string | undefined,
+  namedAgent?: NamedAgent,
 ): Promise<number> {
   const { session, history } = await openSession(cwd, args)
-  const model = args.model ?? config.model ?? defaultModelSpec()
+  const model = pickModel(namedAgent, args.model, undefined, config.model, defaultModelSpec())
+  const mode = pickMode(args.mode, args.modeSet, namedAgent)
 
   // No UI to ask: gated actions are denied unless the mode allows them.
   const askPermission = createAskHandler({
     rules: config.permission,
-    mode: args.mode,
+    mode,
     onAsk: () => "deny",
   })
 
@@ -168,15 +190,16 @@ async function runPrint(
 
   const loop = runAgentLoop({
     sessionID: session.id,
-    agent: "build",
-    mode: args.mode,
+    agent: namedAgent?.name ?? "build",
+    mode,
     cwd,
     userText: args.prompt,
     history,
     model,
-    tools: allTools(),
+    tools: filterToolsByAllowlist(allTools(), namedAgent),
     config,
     projectInstructions,
+    ...(namedAgent?.instructions ? { agentInstructions: namedAgent.instructions } : {}),
     askPermission,
   })
 
@@ -206,14 +229,26 @@ async function runTui(
   projectInstructions: string | undefined,
   warnings: string[],
   themeName?: string,
+  namedAgent?: NamedAgent,
 ): Promise<void> {
   let { session, history } = await openSession(cwd, args)
-  let model = args.model ?? loadProjectModel(cwd) ?? config.model ?? defaultModelSpec()
+  let model = pickModel(
+    namedAgent,
+    args.model,
+    loadProjectModel(cwd),
+    config.model,
+    defaultModelSpec(),
+  )
 
   const bridge = createApprovalBridge()
   const store = createTuiStore(history)
   for (const w of warnings) store.dispatch({ type: "notice", message: w })
-  let mode: Mode = args.mode
+  // The named agent's posture seeds the session; /mode still switches it.
+  let mode: Mode = pickMode(args.mode, args.modeSet, namedAgent)
+
+  // The active agent's tool allowlist, applied to the live list each prompt
+  // so extension tools stay subject to it after a /reload too.
+  const toolsForRun = (): Tool[] => filterToolsByAllowlist(allTools(), namedAgent)
 
   // Built per prompt so a /mode switch applies from the next turn on.
   const askPermission = () =>
@@ -244,7 +279,7 @@ async function runTui(
         controller = new AbortController()
         for await (const event of runAgentLoop({
           sessionID: session.id,
-          agent: "build",
+          agent: namedAgent?.name ?? "build",
           // Subagents and permission checks inherit this mode.
           mode,
           cwd,
@@ -253,9 +288,12 @@ async function runTui(
           userText: "",
           history: [...history],
           model,
-          tools: allTools(),
+          tools: toolsForRun(),
           config,
           projectInstructions,
+          ...(namedAgent?.instructions
+            ? { agentInstructions: namedAgent.instructions }
+            : {}),
           askPermission: askPermission(),
           abort: controller.signal,
         })) {
@@ -315,7 +353,12 @@ async function runTui(
     if (running) return
     void (async () => {
       try {
-        const state = await reloadExtensions({ themeName })
+        const [state] = await Promise.all([
+          reloadExtensions({ themeName }),
+          getAgents(cwd).then(({ warnings }) => {
+            for (const w of warnings) store.dispatch({ type: "notice", message: w })
+          }),
+        ])
         const n = state.extensions.length
         store.setHint(`reloaded ${n} extension${n === 1 ? "" : "s"}`)
       } catch (error) {
@@ -511,12 +554,31 @@ async function main(): Promise<void> {
   // skill index from this load. Failures are strings — see initExtensions.
   const extensions = await initExtensions(theme)
 
+  // Named agents: scaffold the built-in examples on first run, then scan
+  // both directories. Same contract as extensions — warnings, never crashes.
+  const agentWarnings: string[] = []
+  let namedAgent: NamedAgent | undefined
+  try {
+    for (const file of await ensureBuiltinAgents(globalAgentsDir())) {
+      process.stderr.write(`[agents] created ${file}\n`)
+    }
+    const selected = await resolveAgent(cwd, args.agent)
+    agentWarnings.push(...selected.warnings)
+    namedAgent = selected.agent
+    if (namedAgent !== undefined) {
+      process.stderr.write(`[agents] using ${namedAgent.name} (${namedAgent.source})\n`)
+    }
+  } catch (error) {
+    agentWarnings.push(error instanceof Error ? error.message : String(error))
+  }
+  for (const w of agentWarnings) process.stderr.write(`[agents] ${w}\n`)
+
   if (args.print) {
     if (!args.prompt) {
       process.stderr.write("print mode requires a prompt\n")
       process.exit(2)
     }
-    process.exit(await runPrint(cwd, args, config, projectInstructions))
+    process.exit(await runPrint(cwd, args, config, projectInstructions, namedAgent))
   }
 
   if (!process.stdout.isTTY) {
@@ -526,7 +588,8 @@ async function main(): Promise<void> {
   await runTui(cwd, args, config, projectInstructions, [
     ...warnings,
     ...(extensions?.warnings ?? []),
-  ], theme)
+    ...agentWarnings,
+  ], theme, namedAgent)
 }
 
 main().catch((error) => {

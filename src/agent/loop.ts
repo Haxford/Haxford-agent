@@ -66,6 +66,11 @@ export interface AgentLoopInput {
   abort?: AbortSignal
   /** Project instructions (e.g. AGENTS.md) appended to the system prompt. */
   projectInstructions?: string
+  /**
+   * A named agent's prompt addendum, appended after the project
+   * instructions. Absent for the default agent.
+   */
+  agentInstructions?: string
   /** Gate for tool actions. Defaults to allowing everything. */
   askPermission?: (request: PermissionRequest) => Promise<PermissionDecision>
   /**
@@ -437,7 +442,7 @@ export async function* runAgentLoop(
   }
 
   // Stable across turns, so the cached prefix survives the whole loop.
-  const system = assembleSystemPrompt(cwd, input.projectInstructions)
+  const system = assembleSystemPrompt(cwd, input.projectInstructions, undefined, input.agentInstructions)
 
   const toolCtx: ToolContextWithSubagent = {
     sessionID,

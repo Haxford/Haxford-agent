@@ -1,15 +1,14 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { render } from "ink-testing-library"
 import React from "react"
 
 import type { Message } from "../src/types/message.ts"
 import { HaxfordApp } from "../src/tui/app.tsx"
 import { createApprovalBridge } from "../src/tui/approval.ts"
-import { Banner, BANNER_HEIGHT } from "../src/tui/components/Banner.tsx"
-import { Breadcrumb, breadcrumbRenders } from "../src/tui/components/Breadcrumb.tsx"
+import { Banner, HEADER_LINES } from "../src/tui/components/Banner.tsx"
 import { PermissionDialog } from "../src/tui/components/PermissionDialog.tsx"
 import { SpinnerProvider } from "../src/tui/components/Spinner.tsx"
-import { StatusBar, TurnOutcome } from "../src/tui/components/StatusBar.tsx"
+import { StatusBar, TurnOutcome, shortModel } from "../src/tui/components/StatusBar.tsx"
 import { createTuiStore, type TuiStore } from "../src/tui/store.ts"
 import { modeColor, theme } from "../src/tui/theme.ts"
 
@@ -70,27 +69,32 @@ function frameOf(el: React.ReactElement): string {
 
 // ---------------------------------------------------------------------------
 
-describe("banner: printed once, into scrollback", () => {
-  test("it is the first thing on screen and carries the four session facts", () => {
+describe("header: three bare lines, printed once, into scrollback", () => {
+  test("it is the first thing on screen and carries the pi-style facts", () => {
     const { inst } = mount({ contextLimit: 200_000 })
-    const frame = inst.lastFrame() ?? ""
-    const lines = frame.split("\n")
-    expect(lines[0]?.startsWith("╭")).toBe(true)
-    expect(frame).toContain("haxford v")
-    expect(frame).toContain("Welcome back,")
-    expect(frame).toContain("anthropic/claude-sonnet-5")
-    expect(frame).toContain("200k ctx")
-    expect(frame).toContain("/tmp/project")
+    const lines = (inst.lastFrame() ?? "").split("\n")
+    // Line 1: bare name+version. No box characters anywhere in the chrome.
+    expect(lines[0]?.startsWith("haxford v")).toBe(true)
+    // Line 2: the dim keybind hints.
+    expect(inst.lastFrame() ?? "").toContain("esc interrupt")
+    expect(inst.lastFrame() ?? "").toContain("/ commands")
+    expect(inst.lastFrame() ?? "").toContain("/help more")
+    // Line 3: the self-awareness line.
+    expect(inst.lastFrame() ?? "").toContain("~/.haxford/EXTENDING.md")
     inst.unmount()
   })
 
+  test("no box characters in the header at all", () => {
+    const rendered = frameOf(React.createElement(Banner))
+    for (const ch of ["\u256d", "\u256e", "\u2570", "\u256f", "\u2500", "\u2502"]) {
+      expect(rendered).not.toContain(ch)
+    }
+  })
+
   test("its rendered height matches the constant the pin math subtracts", () => {
-    // If these drift the padding is wrong by exactly the drift, which is the
-    // kind of bug that looks like "the layout is just a bit off".
-    const rendered = frameOf(
-      React.createElement(Banner, { model: "a/b", cwd: "/tmp", env: { USER: "harry" } }),
-    )
-    expect(rendered.split("\n")).toHaveLength(BANNER_HEIGHT)
+    const rendered = frameOf(React.createElement(Banner))
+    expect(rendered.split("\n")).toHaveLength(HEADER_LINES)
+    expect(HEADER_LINES).toBe(3)
   })
 
   test("it survives a streaming reply without being redrawn a second time", async () => {
@@ -101,7 +105,7 @@ describe("banner: printed once, into scrollback", () => {
     }
     // Ink prints a <Static> item once and never revisits it. One occurrence
     // after a burst of re-renders is the whole lifetime guarantee.
-    expect(count(inst.lastFrame() ?? "", "Welcome back,")).toBe(1)
+    expect(count(inst.lastFrame() ?? "", "esc interrupt")).toBe(1)
     inst.unmount()
   })
 
@@ -111,8 +115,8 @@ describe("banner: printed once, into scrollback", () => {
     store.dispatch({ type: "message.updated", message: assistantText("m2", "second reply") })
     await flush()
     const frame = inst.lastFrame() ?? ""
-    expect(count(frame, "Welcome back,")).toBe(1)
-    expect(frame.indexOf("Welcome back,")).toBeLessThan(frame.indexOf("first reply"))
+    expect(count(frame, "esc interrupt")).toBe(1)
+    expect(frame.indexOf("esc interrupt")).toBeLessThan(frame.indexOf("first reply"))
     expect(frame.indexOf("first reply")).toBeLessThan(frame.indexOf("second reply"))
     inst.unmount()
   })
@@ -125,80 +129,69 @@ describe("banner: printed once, into scrollback", () => {
     await flush()
     // The epoch remounts the static region: the old transcript is gone from
     // the live frame and a fresh header opens the new session.
-    expect(inst.lastFrame() ?? "").toContain("Welcome back,")
+    expect(count(inst.lastFrame() ?? "", "esc interrupt")).toBe(1)
     inst.unmount()
   })
 })
 
 // ---------------------------------------------------------------------------
 
-describe("breadcrumb: redraws only when what it says changes", () => {
-  beforeEach(() => { breadcrumbRenders.count = 0 })
-
-  test("shows mode, short model, and the way to change it", () => {
-    const { inst } = mount()
-    const frame = inst.lastFrame() ?? ""
-    expect(frame).toContain("build")
-    expect(frame).toContain("claude-sonnet-5")
-    expect(frame).toContain("/model to change")
-    // Short: the provider is in the banner and does not need repeating here.
-    const line = frame.split("\n").find((l) => l.includes("/model to change")) ?? ""
+describe("footer composition (breadcrumb merged in)", () => {
+  test("left half names where you are; right half what is answering", () => {
+    const frame = frameOf(
+      React.createElement(StatusBar, {
+        model: "anthropic/claude-sonnet-5",
+        mode: "build",
+        status: "idle",
+        usage: { input: 1000, output: 0, reasoning: 0 },
+        contextLimit: 100_000,
+        cwd: "/tmp/project",
+        branch: "main",
+      }),
+    )
+    expect(frame.split("\n").filter((l) => l.trim().length > 0)).toHaveLength(1)
+    const line = frame.split("\n").find((l) => l.trim().length > 0) ?? ""
+    // LEFT: cwd (git branch).
+    expect(line).toContain("/tmp/project (main)")
+    // RIGHT: ctx N% (mode) · model-short.
+    expect(line).toContain("ctx 1%")
+    expect(line).toContain("(build)")
+    expect(line).toContain("claude-sonnet-5")
+    // Short model only — the provider prefix belongs to the picker.
     expect(line).not.toContain("anthropic/")
-    inst.unmount()
   })
 
-  test("a streaming reply does not redraw it", async () => {
-    const { store, inst } = mount()
-    await flush()
-    const afterMount = breadcrumbRenders.count
-    for (let i = 0; i < 10; i++) {
-      store.dispatch({ type: "part.delta", messageID: "m1", partID: "p1", delta: "tok " })
-      store.dispatch({ type: "message.updated", message: assistantText("m1", "x".repeat(i + 1)) })
-      await flush(5)
-    }
-    // Ten re-renders of the tree, zero of this line.
-    expect(breadcrumbRenders.count).toBe(afterMount)
-    inst.unmount()
+  test("a failed branch probe just shortens the left half", () => {
+    const frame = frameOf(
+      React.createElement(StatusBar, {
+        model: "a/b", mode: "auto", status: "idle",
+        usage: { input: 0, output: 0, reasoning: 0 },
+        cwd: "/tmp/project",
+      }),
+    )
+    expect(frame).toContain("/tmp/project")
+    expect(frame).not.toContain("(main)")
   })
 
-  test("a mode change redraws it exactly once", () => {
-    const before = breadcrumbRenders.count
-    const inst = render(React.createElement(Breadcrumb, { mode: "build", model: "a/b" }))
-    inst.rerender(React.createElement(Breadcrumb, { mode: "build", model: "a/b" }))
-    inst.rerender(React.createElement(Breadcrumb, { mode: "build", model: "a/b" }))
-    expect(breadcrumbRenders.count - before).toBe(1)
-    inst.rerender(React.createElement(Breadcrumb, { mode: "plan", model: "a/b" }))
-    expect(breadcrumbRenders.count - before).toBe(2)
-    expect(inst.lastFrame() ?? "").toContain("plan")
-    inst.unmount()
-  })
-
-  test("a model change redraws it exactly once", () => {
-    const before = breadcrumbRenders.count
-    const inst = render(React.createElement(Breadcrumb, { mode: "build", model: "a/one" }))
-    inst.rerender(React.createElement(Breadcrumb, { mode: "build", model: "a/two" }))
-    expect(breadcrumbRenders.count - before).toBe(2)
-    expect(inst.lastFrame() ?? "").toContain("two")
-    inst.unmount()
-  })
-
-  test("it sits directly above the input", () => {
-    const { inst } = mount()
-    const lines = (inst.lastFrame() ?? "").split("\n")
-    const crumb = lines.findIndex((l) => l.includes("/model to change"))
-    const rule = lines.findIndex((l, i) => i > crumb && /^─+$/.test(l.trim()))
-    const input = lines.findIndex((l) => l.includes("ask anything"))
-    expect(crumb).toBeGreaterThan(0)
-    expect(rule).toBe(crumb + 1)
-    expect(input).toBe(rule + 1)
-    inst.unmount()
+  test("the cost rides after the model on the right", () => {
+    const frame = frameOf(
+      React.createElement(StatusBar, {
+        model: "a/b", mode: "build", status: "idle",
+        usage: { input: 1_000_000, output: 0, reasoning: 0 },
+        promptPricePerMtok: 3,
+        cwd: "/tmp",
+      }),
+    )
+    const line = frame.split("\n").find((l) => l.includes("$3.0000")) ?? ""
+    expect(line).toContain("$3.0000")
+    expect(line.indexOf("b")).toBeLessThan(line.indexOf("$3.0000"))
   })
 })
 
 // ---------------------------------------------------------------------------
 
 describe("footer: one line, busy or idle", () => {
-  test("idle shows the mode, the ctx figure, and the pointer", () => {
+  test("idle shows the mode in parentheses and the ctx figure", () => {
     const frame = frameOf(
       React.createElement(StatusBar, {
         model: "a/b", mode: "build", status: "idle",
@@ -206,10 +199,9 @@ describe("footer: one line, busy or idle", () => {
       }),
     )
     expect(frame.split("\n").filter((l) => l.trim().length > 0)).toHaveLength(1)
-    expect(frame).toContain("build")
-    expect(frame).toContain("mode (tab to cycle)")
     expect(frame).toContain("ctx 1%")
-    expect(frame).toContain("/help")
+    expect(frame).toContain("(build)")
+    expect(frame).toContain("b")
   })
 
   test("idle carries no spinner glyph", () => {
@@ -232,6 +224,7 @@ describe("footer: one line, busy or idle", () => {
         active: true,
         children: React.createElement(StatusBar, {
           model: "a/b", mode: "build", status: "running", usage: NO_USAGE,
+          cwd: "/tmp/project",
         }),
       }),
     )
@@ -240,29 +233,20 @@ describe("footer: one line, busy or idle", () => {
     expect(frame.split("\n").filter((l) => l.trim().length > 0)).toHaveLength(1)
     // The busy mark leads, so "is it working" is answered where scanning starts.
     const line = frame.split("\n").find((l) => l.trim().length > 0) ?? ""
-    expect(glyphs.some((g) => line.indexOf(g) < line.indexOf("build"))).toBe(true)
+    expect(glyphs.some((g) => line.indexOf(g) < line.indexOf("/tmp/project"))).toBe(true)
   })
 
   test("the full keybinding reference is not in the footer", () => {
+    // It lives in the header's hint line and behind /help — the footer row
+    // belongs to where-you-are and what-is-answering.
     const frame = frameOf(
       React.createElement(StatusBar, {
         model: "a/b", mode: "build", status: "idle", usage: NO_USAGE,
       }),
     )
-    for (const key of ["esc", "ctrl+c", "ctrl+o", "enter", "↑"]) {
+    for (const key of ["ctrl+c", "ctrl+o", "enter", "↑", "tab to cycle"]) {
       expect(frame).not.toContain(key)
     }
-  })
-
-  test("the model and cwd are not repeated here", () => {
-    // Both are one line up, or in the banner. Repeating them costs the row
-    // that everything else in this footer had to earn.
-    const frame = frameOf(
-      React.createElement(StatusBar, {
-        model: "anthropic/claude-sonnet-5", mode: "build", status: "idle", usage: NO_USAGE,
-      }),
-    )
-    expect(frame).not.toContain("claude-sonnet-5")
   })
 
   test("cost still shows when the catalog priced the model", () => {
@@ -328,27 +312,31 @@ describe("states: interruption and errors are inline, not chrome", () => {
 // ---------------------------------------------------------------------------
 
 describe("bottom pinning in the live frame", () => {
-  test("a fresh session fills the viewport and lands the footer on the last row", () => {
+  test("a fresh session lands the footer on the last row", () => {
     const { inst } = mount()
     const lines = (inst.lastFrame() ?? "").split("\n")
     // ink-testing-library reports no rows, so the layout uses the 24-row
-    // default; the frame should fill it exactly rather than floating.
-    expect(lines).toHaveLength(24)
-    expect(lines[lines.length - 1]).toContain("mode (tab to cycle)")
+    // default. The footer is still the last row — but the frame no longer
+    // fills the viewport with filler to get there.
+    expect(lines[lines.length - 1]).toContain("(build)")
     inst.unmount()
   })
 
-  test("the padding is blank lines above the live region, not below it", () => {
+  test("first paint is tight: at most two blank filler rows, never a wall of dead space", () => {
+    // The old math spent every free row pushing the composer down, which
+    // measured at eight blank lines between header and chrome on a fresh
+    // session. The clamp keeps first paint tight even in small ptys.
     const { inst } = mount()
     const lines = (inst.lastFrame() ?? "").split("\n")
     const blanks = lines.filter((l) => l.trim().length === 0).length
-    expect(blanks).toBeGreaterThan(5)
-    // Nothing blank after the footer: the pin is achieved by pushing down.
+    expect(blanks).toBeLessThanOrEqual(2)
+    expect(blanks).toBeGreaterThanOrEqual(0)
+    // Nothing blank after the footer.
     expect(lines[lines.length - 1]?.trim().length).toBeGreaterThan(0)
     inst.unmount()
   })
 
-  test("transcript growth takes the padding back", async () => {
+  test("transcript growth never increases the padding", async () => {
     const { store, inst } = mount()
     const before = (inst.lastFrame() ?? "").split("\n").filter((l) => l.trim().length === 0).length
     store.dispatch({
@@ -357,7 +345,7 @@ describe("bottom pinning in the live frame", () => {
     })
     await flush()
     const after = (inst.lastFrame() ?? "").split("\n").filter((l) => l.trim().length === 0).length
-    expect(after).toBeLessThan(before)
+    expect(after).toBeLessThanOrEqual(before)
     inst.unmount()
   })
 
@@ -398,8 +386,8 @@ describe("colour roles", () => {
   })
 
   test("the model has one colour token, so it reads the same everywhere", () => {
-    // Banner, breadcrumb, and picker all name the same thing; a single token
-    // is what stops that becoming three treatments of one concept.
+    // Footer and picker name the model; a single token is what stops that
+    // becoming two treatments of one concept.
     expect(["cyan", "blue"]).toContain(theme.model)
   })
 
@@ -423,14 +411,14 @@ describe("colour roles", () => {
     expect(theme.muted).toBe("gray")
   })
 
-  test("both the banner and the breadcrumb print the model", () => {
-    const banner = frameOf(
-      React.createElement(Banner, { model: "anthropic/claude-sonnet-5", cwd: "/tmp" }),
+  test("the footer prints the short model, and only in the theme's model colour role", () => {
+    const frame = frameOf(
+      React.createElement(StatusBar, {
+        model: "anthropic/claude-sonnet-5", mode: "build", status: "idle",
+        usage: { input: 0, output: 0, reasoning: 0 }, cwd: "/tmp",
+      }),
     )
-    const crumb = frameOf(
-      React.createElement(Breadcrumb, { mode: "build", model: "anthropic/claude-sonnet-5" }),
-    )
-    expect(banner).toContain("anthropic/claude-sonnet-5")
-    expect(crumb).toContain("claude-sonnet-5")
+    expect(frame).toContain("claude-sonnet-5")
+    expect(shortModel("anthropic/claude-sonnet-5")).toBe("claude-sonnet-5")
   })
 })

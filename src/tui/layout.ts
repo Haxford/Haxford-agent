@@ -28,16 +28,6 @@ export function separatorBefore(
 }
 
 
-/**
- * Rows the breadcrumb costs: its own line, plus the single blank row that
- * separates the whole chrome stack from the transcript above it.
- *
- * The separator is counted here rather than left implicit because it is
- * unconditional — one margin for the group, not one per member — and the pin
- * math is only correct if every row it does not draw is a row it subtracts.
- */
-export const BREADCRUMB_LINES = 2
-
 /** Rows the footer occupies. One line, always — that is the whole point of it. */
 export const FOOTER_LINES = 1
 
@@ -106,10 +96,8 @@ export function estimateTranscriptLines(messages: Message[], width: number): num
 export interface PinInput {
   /** Terminal height in rows. */
   height: number
-  /** Rows the banner occupies (it is printed once, into scrollback). */
+  /** Rows the header occupies (it is printed once, into scrollback). */
   banner: number
-  /** Rows the breadcrumb occupies. */
-  breadcrumb: number
   /** Rows the input occupies, rules included. */
   input: number
   /** Rows the footer occupies. */
@@ -119,21 +107,30 @@ export interface PinInput {
 }
 
 /**
- * Blank lines to insert above the live region so the input and footer sit on
- * the terminal's last rows.
+ * The most blank filler rows the frame will draw above the live region.
  *
- * A terminal puts new output wherever the cursor is, so a session that has
- * only just started draws its composer a third of the way down the screen and
- * leaves two thirds of dead space below it. Padding closes that gap at the
- * top instead, which is where empty space is unremarkable.
+ * Bottom-pinning used to spend every free row pushing the composer onto the
+ * terminal's last rows, which on a fresh session meant a screenful of dead
+ * space between the header and the first line of chrome — measured at eight
+ * blank lines on a stock terminal. The pin is capped now: a couple of filler
+ * rows keeps the first paint tight, and content grows downward from there.
+ * pi's own start screen does the same, and it is why small ptys (10-20 rows)
+ * still show input + footer on the first frame instead of a wall of nothing.
+ */
+export const MAX_FILLER_LINES = 2
+
+/**
+ * Blank lines to insert above the live region, clamped to `MAX_FILLER_LINES`.
  *
  * The result decays to zero on its own: every line the transcript gains is a
  * line of padding it takes, and once the content fills the viewport the
- * terminal's own scrolling does the pinning for free. Clamped at zero, so an
- * overflowing frame simply stops padding rather than going negative.
+ * terminal's own scrolling takes over. Clamped at both ends — zero when the
+ * frame overflows (never negative), `MAX_FILLER_LINES` however tall the
+ * terminal is.
  */
 export function bottomPadding(p: PinInput): number {
-  const used = p.banner + p.breadcrumb + p.input + p.footer + p.transcript
+  const used = p.banner + p.input + p.footer + p.transcript
   const free = p.height - used
-  return free > 0 ? free : 0
+  if (free <= 0) return 0
+  return Math.min(free, MAX_FILLER_LINES)
 }

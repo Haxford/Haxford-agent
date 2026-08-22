@@ -2,6 +2,7 @@ import { Box, Text } from "ink"
 import React from "react"
 
 import type { TotalUsage } from "../state.ts"
+import { tildeCwd } from "../components/Banner.tsx"
 import { formatElapsed, formatTokens } from "../format.ts"
 import { useInterval } from "../hooks.ts"
 import { modeColor, theme } from "../theme.ts"
@@ -16,9 +17,10 @@ export interface StatusBarProps {
   usage: TotalUsage
   /** Context window limit; percent is skipped silently when undefined. */
   contextLimit?: number
-  /** Working directory, shown short-form on the right. */
+  /** Working directory, shown tilde-shortened on the left of the footer. */
   cwd?: string
-  error?: string
+  /** Git branch of `cwd`, probed once at startup; omitted when it cannot be resolved. */
+  branch?: string
   /** Reason from the last loop.end; shown in a warning color when not end_turn. */
   endReason?: string
   /** USD per million prompt tokens for the active model. Omitted => no cost shown. */
@@ -30,9 +32,9 @@ export interface StatusBarProps {
 /**
  * Label + color for the mode word.
  *
- * The composer's left rail is the primary mode indicator; this is the echo.
- * Brackets are gone — they were noise around a word that already reads as a
- * label because of its color.
+ * The mode lives in the footer's right cluster now, wrapped in parentheses
+ * after the ctx figure — pi's arrangement. It was a standalone word before;
+ * the parentheses make it read as metadata attached to the numbers beside it.
  */
 export function modeBadge(mode: Mode): { text: string; color: string } {
   return { text: mode, color: modeColor(mode) }
@@ -70,6 +72,23 @@ export function reasonLabel(
     default:
       return { text: reason, color: theme.warning }
   }
+}
+
+/**
+ * The short form of a model spec: the model, without the provider that serves
+ * it. The provider is named once by the picker and the banner's absence is
+ * deliberate — a one-line footer cannot afford it, and specs that carry a
+ * nested path (`openrouter/z-ai/glm-5.2`) keep only the final segment, which
+ * is the part that names the model.
+ *
+ * Moved here when the breadcrumb merged into this footer: one line says the
+ * model now, so the shortener lives next to the only thing that renders it.
+ */
+export function shortModel(spec: string): string {
+  const trimmed = spec.trim()
+  if (trimmed.length === 0) return trimmed
+  const slash = trimmed.lastIndexOf("/")
+  return slash === -1 ? trimmed : trimmed.slice(slash + 1)
 }
 
 /** Context usage as a 0-100 percent, or undefined if unmeasurable. */
@@ -113,21 +132,94 @@ export function formatCost(cost: number): string {
   return `$${cost.toFixed(4)}`
 }
 
+// --- footer composition ----------------------------------------------------
+
+/**
+ * The footer's left half: where you are, and which branch.
+ *
+ * Pure and exported so composition is testable without rendering. An absent
+ * cwd degrades to the bare branch; both absent degrade to an empty string and
+ * the component skips the node entirely rather than printing an empty gap.
+ */
+export function footerLeft(cwd: string | undefined, branch?: string): string {
+  if (cwd === undefined || cwd.length === 0) return branch ?? ""
+  const base = tildeCwd(cwd)
+  return branch === undefined || branch.length === 0 ? base : `${base} (${branch})`
+}
+
+/** What each piece of the footer's right cluster is, and how it is coloured. */
+export type FooterRole = "dim" | "mode" | "model" | "cost"
+
+export interface FooterSegment {
+  text: string
+  role: FooterRole
+}
+
+/**
+ * The footer's right half, as ordered coloured runs:
+ * `ctx N% (<mode>) · <model-short> • <$cost>`.
+ *
+ * The cost rides after the model, dot-separated like everything else on the
+ * line; it simply does not appear when there is nothing honest to show.
+ * Segments rather than one composed string because the mode word and the
+ * model name are the two coloured tokens on this line — composing first and
+ * re-parsing to colour would be the fragile version of the same feature.
+ */
+export function footerSegments(opts: {
+  mode: Mode
+  model: string
+  pct?: number
+  cost?: number
+}): FooterSegment[] {
+  const segs: FooterSegment[] = []
+  // The ctx figure leads the cluster: it is the number that changes while you
+  // work, and it anchors the parenthesised mode that follows it.
+  segs.push({
+    text: opts.pct !== undefined ? `ctx ${opts.pct}% (` : "(",
+    role: "dim",
+  })
+  segs.push({ text: opts.mode, role: "mode" })
+  segs.push({ text: ")", role: "dim" })
+  const short = shortModel(opts.model)
+  if (short.length > 0) {
+    segs.push({ text: " · ", role: "dim" })
+    segs.push({ text: short, role: "model" })
+  }
+  if (opts.cost !== undefined) {
+    segs.push({ text: " • ", role: "dim" })
+    segs.push({ text: formatCost(opts.cost), role: "cost" })
+  }
+  return segs
+}
+
+/** The right cluster as one plain string (tests, logging, width math). */
+export function footerRight(opts: Parameters<typeof footerSegments>[0]): string {
+  return footerSegments(opts)
+    .map((s) => s.text)
+    .join("")
+}
+
 /**
  * The persistent footer: one line, below the input's lower rule.
  *
- * One line is the entire design. Everything that was competing for space here
- * has a better home — the model and mode are named in the breadcrumb directly
- * above, the cwd is in the banner, errors and interruptions are inline in the
- * transcript where the thing that failed is, and the keybinding reference is
- * behind /help. What is left is the state that changes while you work: whether
- * the agent is busy, and how much of the window is gone.
+ * Merged with what used to be the breadcrumb above the input — pi's measured
+ * start screen spends exactly one row saying where you are and what is
+ * answering, and that row belongs at the bottom edge, adjacent to the input
+ * it describes. Left: cwd (git-branch), tilde-shortened. Right: the live
+ * figures — ctx%, the permission mode in parentheses, the short model, and
+ * the running cost when it is known. The busy mark leads the whole line when
+ * a run is in flight, so "is it doing something" is answered at the far left
+ * where scanning starts, in a cell that is empty when idle.
  *
- * The right-hand side is a pointer, not a status: `/help` and nothing else. A
- * footer that lists every key teaches nothing after the first minute and costs
- * a row forever.
+ * Everything that was competing for space here has a better home: the
+ * keybinding reference moved into the header's hint line and behind /help,
+ * errors and interruptions are inline in the transcript where the thing that
+ * failed is.
  */
 export function StatusBar({
+  cwd,
+  branch,
+  model,
   mode,
   status,
   usage,
@@ -135,33 +227,32 @@ export function StatusBar({
   promptPricePerMtok,
   completionPricePerMtok,
 }: StatusBarProps): React.ReactElement {
-  const badge = modeBadge(mode)
   const pct = contextPercent(usage, contextLimit)
   const cost = sessionCost(usage, promptPricePerMtok, completionPricePerMtok)
   const running = status === "running"
+  const left = footerLeft(cwd, branch)
+  const segments = footerSegments({ mode, model, pct, cost })
 
   return (
     <Box paddingLeft={2} gap={1}>
-      {/* The busy mark leads the line, so "is it doing something" is answered
-          at the far left where scanning starts — and it occupies a cell that
-          is empty when idle, so the rest of the line never shifts. */}
       {running ? <Spinner /> : null}
-      <Text color={badge.color}>{badge.text}</Text>
-      <Text dimColor>{"mode (tab to cycle)"}</Text>
-      {pct !== undefined ? (
-        <>
-          <Text dimColor>·</Text>
-          <Text dimColor>{"ctx "}{pct}{"%"}</Text>
-        </>
-      ) : null}
-      {cost !== undefined ? (
-        <>
-          <Text dimColor>·</Text>
-          <Text dimColor>{formatCost(cost)}</Text>
-        </>
+      {left.length > 0 ? (
+        <Text dimColor wrap="truncate-middle">{left}</Text>
       ) : null}
       <Box flexGrow={1} justifyContent="flex-end">
-        <Text dimColor>{"/help"}</Text>
+        <Text>
+          {segments.map((seg, i) => {
+            if (seg.role === "mode") {
+              return (
+                <Text key={i} color={modeBadge(mode).color}>{seg.text}</Text>
+              )
+            }
+            if (seg.role === "model") {
+              return <Text key={i} color={theme.model}>{seg.text}</Text>
+            }
+            return <Text key={i} dimColor>{seg.text}</Text>
+          })}
+        </Text>
       </Box>
     </Box>
   )

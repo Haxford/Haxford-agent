@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test"
 
-import { shortCwd } from "../src/tui/components/Banner.tsx"
 import {
   contextPercent,
+  footerLeft,
+  footerRight,
   modeBadge,
   reasonLabel,
+  shortModel,
 } from "../src/tui/components/StatusBar.tsx"
 import {
   displayLabel,
@@ -25,15 +27,46 @@ import {
 } from "../src/tui/components/ModelPicker.tsx"
 import { clampCursor, matchCommands, NO_ARG_COMMANDS, parseSlashCommand, takesArg } from "../src/tui/app.tsx"
 
-describe("Banner.shortCwd", () => {
-  test("returns the basename", () => {
-    expect(shortCwd("/home/harry/projects/x")).toBe("x")
-    expect(shortCwd("/a/b/c")).toBe("c")
+describe("StatusBar.shortModel", () => {
+  test("drops the provider, which the picker already named", () => {
+    expect(shortModel("anthropic/claude-sonnet-5")).toBe("claude-sonnet-5")
   })
-  test("handles trailing slashes and root", () => {
-    expect(shortCwd("/a/b/")).toBe("b")
-    expect(shortCwd("/")).toBe("/")
-    expect(shortCwd("nopath")).toBe("nopath")
+  test("keeps only the final segment of a nested spec", () => {
+    expect(shortModel("openrouter/z-ai/glm-5.2")).toBe("glm-5.2")
+  })
+  test("a bare model name is already short", () => {
+    expect(shortModel("gpt-5")).toBe("gpt-5")
+    expect(shortModel("")).toBe("")
+  })
+})
+
+describe("footer composition", () => {
+  test("left half is cwd plus branch in parentheses", () => {
+    expect(footerLeft("/tmp/work", "main")).toBe("/tmp/work (main)")
+    expect(footerLeft("/tmp/project", undefined)).toBe("/tmp/project")
+    expect(footerLeft("/tmp/project", "")).toBe("/tmp/project")
+  })
+
+  test("a missing cwd degrades to the bare branch, then to nothing", () => {
+    expect(footerLeft(undefined, "main")).toBe("main")
+    expect(footerLeft(undefined, undefined)).toBe("")
+    expect(footerLeft("", "dev")).toBe("dev")
+  })
+
+  test("right half reads ctx N% (mode) · model • cost", () => {
+    expect(
+      footerRight({ mode: "build", model: "anthropic/claude-sonnet-5", pct: 12, cost: 0.087 }),
+    ).toBe("ctx 12% (build) · claude-sonnet-5 • $0.0870")
+  })
+
+  test("no limit means no ctx figure but the mode stays", () => {
+    expect(footerRight({ mode: "plan", model: "a/b" })).toBe("(plan)")
+  })
+
+  test("an unpriced session shows no cost segment", () => {
+    const right = footerRight({ mode: "auto", model: "z-ai/glm-5.2", pct: 0 })
+    expect(right).toBe("ctx 0% (auto) · glm-5.2")
+    expect(right).not.toContain("$")
   })
 })
 

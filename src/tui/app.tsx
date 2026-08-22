@@ -5,8 +5,7 @@ import type { Message } from "../types/message.ts"
 import type { SessionInfo } from "../types/session.ts"
 import type { PermissionRequest } from "../types/tool.ts"
 import type { ApprovalBridge } from "./approval.ts"
-import { Banner, BANNER_HEIGHT } from "./components/Banner.tsx"
-import { Breadcrumb } from "./components/Breadcrumb.tsx"
+import { Banner, HEADER_LINES } from "./components/Banner.tsx"
 import { Composer, type ComposerHandle } from "./components/Composer.tsx"
 import { ConnectDialog } from "./components/ConnectDialog.tsx"
 import { HelpPanel, HELP_TEXT, COMMANDS, type CommandRow } from "./components/HelpPanel.tsx"
@@ -19,12 +18,12 @@ import { ActivityLine, StatusBar, TurnOutcome } from "./components/StatusBar.tsx
 import { MessageView, Transcript } from "./components/Transcript.tsx"
 import { useTerminalSize } from "./hooks.ts"
 import {
-  BREADCRUMB_LINES,
   FOOTER_LINES,
   bottomPadding,
   composerHeight,
   estimateTranscriptLines,
 } from "./layout.ts"
+import { probeBranch } from "./git.ts"
 import { synchronizedStdout } from "./raw.ts"
 import { splitTranscript } from "./state.ts"
 import { railProps, theme } from "./theme.ts"
@@ -417,6 +416,20 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     return () => { cancelled = true }
   }, [ui.showSessions.kind, listSessions])
 
+  // The footer names the git branch next to the cwd. Probed once per cwd and
+  // cached in git.ts; a failure resolves to undefined and the footer simply
+  // omits it. The effect never blocks first paint — the label arrives a frame
+  // later at most.
+  const [branch, setBranch] = useState<string | undefined>(undefined)
+  const branchCwd = cwd ?? "."
+  useEffect(() => {
+    let live = true
+    void probeBranch(branchCwd).then((b) => {
+      if (live) setBranch(b ?? undefined)
+    })
+    return () => { live = false }
+  }, [branchCwd])
+
   const running = state.status === "running"
 
   /**
@@ -778,8 +791,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       0
     : bottomPadding({
         height: rows,
-        banner: BANNER_HEIGHT,
-        breadcrumb: BREADCRUMB_LINES,
+        banner: HEADER_LINES,
         input: composerHeight(composerValue, columns),
         footer: FOOTER_LINES,
         transcript:
@@ -811,10 +823,10 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       <Static key={`${state.epoch}:${state.toolsExpanded ? "x" : "c"}`} items={staticItems}>
         {(item) =>
           item.kind === "banner" ? (
-            // No marginTop: the banner is the first thing on the screen, and
+            // No marginTop: the header is the first thing on the screen, and
             // a blank line above it is a blank line at the top of the session.
             <Box key="banner" flexDirection="column">
-              <Banner model={model} cwd={cwd ?? "."} contextLimit={contextLimit} />
+              <Banner />
             </Box>
           ) : (
             <Box key={item.id} flexDirection="column" marginTop={1}>
@@ -919,7 +931,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         <Box flexDirection="column" marginTop={1}>
         {/*
           Transient chrome feedback (mode switch, ctrl+c confirmation). It sits
-          directly above the breadcrumb — the band the eye is already trained
+          directly above the input — the band the eye is already trained
           on — and expires on its own, so nothing it says ever reaches the
           transcript.
         */}
@@ -928,10 +940,6 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
             <Text dimColor>{activeHint}</Text>
           </Box>
         ) : null}
-
-        {/* Mode and model, one line above where you type. Memoized on exactly
-            those two values, so a streaming reply never redraws it. */}
-        <Breadcrumb mode={mode} model={model} />
 
         <Composer
           disabled={composerDisabled}
@@ -947,7 +955,11 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
         />
 
+        {/* Where you are and what is answering, on the terminal's last row:
+            cwd (branch) left; ctx%, mode, model, cost right. */}
         <StatusBar
+          cwd={cwd}
+          branch={branch}
           model={model}
           mode={mode}
           status={state.status}

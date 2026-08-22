@@ -197,6 +197,7 @@ export {
   getSkillBody,
   listSkills,
   parseFrontmatter,
+  parseFrontmatterFields,
   scanSkills,
   stripFrontmatter,
   type SkillSummary,

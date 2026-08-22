@@ -81,7 +81,9 @@ function skillsSection(skills: SkillSummary[]): string {
 
 /**
  * Build the system prompt. Stable content comes first so the cache prefix
- * survives; `projectInstructions` (e.g. AGENTS.md) is appended verbatim.
+ * survives; `projectInstructions` (e.g. AGENTS.md) is appended verbatim, and
+ * a named agent's own addendum comes last of all — it is the most specific
+ * voice in the stack and may need to override what came before.
  *
  * `skills` defaults to the live index rather than being threaded through from
  * the host, which is what makes the block always current after a `/reload`
@@ -91,6 +93,7 @@ export function assembleSystemPrompt(
   cwd: string,
   projectInstructions?: string,
   skills: SkillSummary[] = listSkills(),
+  agentInstructions?: string,
 ): string {
   const sections: string[] = [IDENTITY, extendingSection(extendingDocPath())]
 
@@ -108,6 +111,9 @@ export function assembleSystemPrompt(
 
   const instructions = projectInstructions?.trim()
   if (instructions) sections.push(instructions)
+
+  const addendum = agentInstructions?.trim()
+  if (addendum) sections.push(addendum)
 
   return sections.join("\n\n")
 }

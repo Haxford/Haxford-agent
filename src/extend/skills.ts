@@ -76,22 +76,23 @@ function unquote(value: string): string {
 }
 
 /**
- * Pull `name` and `description` out of a frontmatter block.
+ * Pull every `key: value` pair out of a frontmatter block.
  *
  * One-line scalars only. Anything else — block scalars, nested maps, lists —
- * is ignored rather than half-parsed: this is an index, and a skill whose
- * description does not fit on a line is better fixed than guessed at. Missing
- * or malformed frontmatter yields an empty result, never a throw.
+ * is ignored rather than half-parsed: this is metadata, and a field that does
+ * not fit on a line is better fixed than guessed at. Missing or malformed
+ * frontmatter yields an empty result, never a throw.
+ *
+ * Shared with the named-agents loader (`src/agent/agents.ts`), which reads
+ * more keys than skills do; this module owns the parsing so there is exactly
+ * one frontmatter dialect on disk.
  */
-export function parseFrontmatter(head: string): {
-  name?: string
-  description?: string
-} {
+export function parseFrontmatterFields(head: string): Record<string, string> {
   const text = head.replace(/\r\n/g, "\n")
   if (!text.startsWith("---")) return {}
 
   const lines = text.split("\n")
-  const out: { name?: string; description?: string } = {}
+  const out: Record<string, string> = {}
 
   // Skip the opening delimiter; stop at the closing one, or at the end of
   // whatever slice of the file we were handed.
@@ -107,13 +108,28 @@ export function parseFrontmatter(head: string): {
     // the following lines, which this parser deliberately does not read.
     // Taking the marker as the value would put a literal ">" in the prompt.
     if (/^[>|][-+]?\d*$/.test(value)) continue
-    if (key === "name" && out.name === undefined) out.name = value
-    else if (key === "description" && out.description === undefined) {
-      out.description = value
-    }
+    if (out[key] === undefined) out[key] = value
   }
 
   return out
+}
+
+/**
+ * Pull `name` and `description` out of a frontmatter block.
+ *
+ * Missing or malformed frontmatter yields an empty result, never a throw.
+ */
+export function parseFrontmatter(head: string): {
+  name?: string
+  description?: string
+} {
+  const fields = parseFrontmatterFields(head)
+  return {
+    ...(fields["name"] !== undefined ? { name: fields["name"] } : {}),
+    ...(fields["description"] !== undefined
+      ? { description: fields["description"] }
+      : {}),
+  }
 }
 
 /**

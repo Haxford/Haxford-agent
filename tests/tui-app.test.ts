@@ -64,17 +64,15 @@ function mount(overrides: {
 }
 
 describe("HaxfordApp rendering + app-level input", () => {
-  test("initial render shows the banner box, the breadcrumb, and the footer", () => {
+  test("initial render shows the pi-style header and the footer", () => {
     const { inst } = mount()
     const frame = inst.lastFrame() ?? ""
-    // Banner: what this is, who you are, what is answering, where you are.
+    // Header line 1: bare name+version; lines 2-3: hints, self-description.
     expect(frame).toContain("haxford v")
-    expect(frame).toContain("Welcome back,")
-    expect(frame).toContain("mock/demo")
-    // Breadcrumb: mode, short model, how to change it.
-    expect(frame).toContain("/model to change")
-    // Footer: the mode and the pointer, and nothing else.
-    expect(frame).toContain("mode (tab to cycle)")
+    expect(frame).toContain("esc interrupt")
+    expect(frame).toContain("~/.haxford/EXTENDING.md")
+    // Footer: where you are and what is answering.
+    expect(frame).toContain("(build)")
     expect(frame).toContain("/help")
     // No ASCII art: the wordmark line is plain text.
     expect(frame).not.toContain("\u2588")
@@ -85,24 +83,24 @@ describe("HaxfordApp rendering + app-level input", () => {
     const { inst } = mount()
     const lines = (inst.lastFrame() ?? "").split("\n").filter((l) => l.trim().length > 0)
     const composer = lines.findIndex((l) => l.includes("ask anything"))
-    const footer = lines.findIndex((l) => l.includes("mode (tab to cycle)"))
+    const footer = lines.findIndex((l) => l.includes("(build)"))
     expect(composer).toBeGreaterThanOrEqual(0)
     expect(footer).toBe(lines.length - 1)
     expect(footer).toBeGreaterThan(composer)
   })
 
-  test("exactly one box in the default frame, and it is the banner", () => {
+  test("no box characters anywhere in the default frame", () => {
     const { inst } = mount()
     const frame = inst.lastFrame() ?? ""
-    // A border reads as "a distinct thing" precisely once per screen. The
-    // corners are counted rather than merely detected: a second box is the
-    // regression this guards against, not the absence of the first.
-    for (const corner of ["\u256d", "\u256e", "\u2570", "\u256f"]) {
-      expect(frame.split(corner).length - 1).toBe(1)
+    // The banner's box is gone; nothing in the chrome draws a border except
+    // rails (verticals) and the permission dialog when it appears. Corners
+    // are the regression signal: they only exist on boxes.
+    for (const corner of ["\u256d", "\u256e", "\u2570", "\u256f", "\u250c", "\u2510", "\u2514", "\u2518"]) {
+      expect(frame).not.toContain(corner)
     }
-    // The input is bracketed by rules, not boxed: full-width horizontals with
-    // no corners of their own.
-    const rules = (inst.lastFrame() ?? "")
+    // The input is bracketed by rules: full-width horizontals with no
+    // corners of their own.
+    const rules = frame
       .split("\n")
       .filter((l) => /^\u2500+$/.test(l.trim()) && l.trim().length > 20)
     expect(rules).toHaveLength(2)

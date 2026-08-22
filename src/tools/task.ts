@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { resolveAgent, type NamedAgent } from "../agent/agents.ts"
 import { runAgentLoop, type ToolContextWithSubagent } from "../agent/loop.ts"
 import { createAskHandler } from "../permission/engine.ts"
 import type { Message, TextPart } from "../types/message.ts"
@@ -16,6 +17,14 @@ const parameters = z.object({
   prompt: z
     .string()
     .describe("The detailed, self-contained instruction for the subagent."),
+  agent: z
+    .string()
+    .optional()
+    .describe(
+      "Name of a user-defined agent to run this subtask as (see the agents " +
+        "listed in your instructions, e.g. \"reviewer\"). Omit for a default " +
+        "subagent.",
+    ),
 })
 
 type Args = z.infer<typeof parameters>
@@ -56,6 +65,9 @@ How it works:
   survives, so say what you want reported — "list the file:line of each call
   site" beats "look into the call sites".
 - You cannot send follow-up messages. One prompt, one answer.
+- Pass 'agent' to run the subtask as a user-defined agent (e.g. "reviewer")
+  instead of a default one; its model, permissions, tools and instructions
+  then apply.
 
 Launch several in parallel in a single step when the subtasks are
 independent — that is the main reason to use this tool.
@@ -84,8 +96,30 @@ for work that depends on context only you have.`,
       }
     }
 
-    // No nesting: a subagent never gets the task tool.
-    const tools = sub.tools.filter((tool) => tool.id !== "task")
+    // A named agent reshapes the subagent: its own model, permission
+    // posture, tool allowlist and prompt addendum. Unknown names are an
+    // error the model can act on, not a throw.
+    let named: NamedAgent | undefined
+    if (args.agent !== undefined && args.agent.trim().length > 0) {
+      const resolved = await resolveAgent(ctx.cwd, args.agent)
+      if (resolved.agent === undefined) {
+        return {
+          title: description,
+          output:
+            `Error: no agent named ${JSON.stringify(args.agent.trim())} is defined. ` +
+            resolved.warnings.join(" "),
+        }
+      }
+      named = resolved.agent
+    }
+
+    // No nesting: a subagent never gets the task tool. The allowlist filters
+    // whatever remains.
+    let tools = sub.tools.filter((tool) => tool.id !== "task")
+    if (named?.tools !== undefined) {
+      const allowed = new Set(named.tools.map((id) => id.toLowerCase()))
+      tools = tools.filter((tool) => allowed.has(tool.id))
+    }
 
     /**
      * A subagent runs under its parent's permission mode, never a laxer one.
@@ -100,7 +134,10 @@ for work that depends on context only you have.`,
      */
     const askPermission = createAskHandler({
       ...(sub.config?.permission ? { rules: sub.config.permission } : {}),
-      mode: sub.mode,
+      // The named agent's own posture wins when declared: the author of the
+      // agent file opted into it deliberately (e.g. a read-only reviewer in
+      // plan mode). Without one, the parent's posture applies.
+      mode: named?.mode ?? sub.mode,
       onAsk: () => "deny",
     })
 
@@ -114,16 +151,17 @@ for work that depends on context only you have.`,
     try {
       const events = runAgentLoop({
         sessionID: `${ctx.sessionID}:sub:${crypto.randomUUID()}`,
-        agent: description,
+        agent: named?.name ?? description,
         cwd: ctx.cwd,
         userText: prompt,
         history: [],
-        model: sub.model,
+        model: named?.model ?? sub.model,
         tools,
         config: { ...(sub.config ?? {}), maxTurns: SUBAGENT_MAX_TURNS },
         abort: ctx.abort,
         askPermission,
-        mode: sub.mode,
+        mode: named?.mode ?? sub.mode,
+        ...(named?.instructions ? { agentInstructions: named.instructions } : {}),
         ...(sub.retry ? { retry: sub.retry } : {}),
       })
 
