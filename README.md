@@ -8,7 +8,13 @@ Single-process terminal AI coding agent that works across your whole codebase â€
 
 ## Install
 
-Requires [Bun](https://bun.sh) >= 1.2.
+One line (downloads a prebuilt binary from [Releases](https://github.com/Haxford/Haxford-agent/releases)):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Haxford/Haxford-agent/main/install.sh | bash
+```
+
+Or build from source â€” requires [Bun](https://bun.sh) >= 1.2:
 
 ```bash
 git clone <repo> && cd haxford-agent
