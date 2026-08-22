@@ -3,8 +3,9 @@ import { render } from "ink-testing-library"
 import React from "react"
 
 import type { SessionInfo } from "../src/types/session.ts"
-import { HaxfordApp, HELP_TEXT, parseSlashCommand, type SlashAction } from "../src/tui/app.tsx"
+import { HaxfordApp, HELP_TEXT, isExactCommandMatch, parseSlashCommand, type SlashAction } from "../src/tui/app.tsx"
 import { createApprovalBridge } from "../src/tui/approval.ts"
+import { Composer, type ComposerHandle } from "../src/tui/components/Composer.tsx"
 import { SlashAutocomplete } from "../src/tui/components/SlashAutocomplete.tsx"
 import { COMMANDS } from "../src/tui/components/HelpPanel.tsx"
 import { createTuiStore } from "../src/tui/store.ts"
@@ -61,13 +62,39 @@ function mount(overrides: {
 }
 
 describe("HaxfordApp rendering + app-level input", () => {
-  test("initial render shows status bar with model + mode badge + banner", () => {
+  test("initial render shows the banner, its affordance grid, and the footer", () => {
     const { inst } = mount()
     const frame = inst.lastFrame() ?? ""
     expect(frame).toContain("mock/demo")
-    expect(frame).toContain("[build]") // mode badge
+    expect(frame).toContain("build") // mode word, no brackets
     expect(frame).toContain("haxford") // banner wordmark
+    // The empty state teaches: the hint grid names the keys it accepts.
     expect(frame).toContain("/help")
+    expect(frame).toContain("commands")
+    expect(frame).toContain("cycle mode")
+    expect(frame).toContain("interrupt")
+    // No ASCII art: the wordmark line is plain text.
+    expect(frame).not.toContain("█")
+    expect(frame).not.toContain("▀")
+  })
+
+  test("status bar renders below the composer", () => {
+    const { inst } = mount()
+    const lines = (inst.lastFrame() ?? "").split("\n")
+    const composer = lines.findIndex((l) => l.includes("ask anything"))
+    const status = lines.findIndex((l) => l.includes("mock/demo") && l.includes("build"))
+    expect(composer).toBeGreaterThanOrEqual(0)
+    expect(status).toBeGreaterThan(composer)
+  })
+
+  test("no rounded box borders anywhere in the default frame", () => {
+    const { inst } = mount()
+    const frame = inst.lastFrame() ?? ""
+    for (const glyph of ["╭", "╮", "╰", "╯", "─"]) {
+      expect(frame).not.toContain(glyph)
+    }
+    // The left rail is the one grouping device that remains.
+    expect(frame).toContain("┃")
   })
 
   test("Composer is disabled while running (placeholder hint)", async () => {
@@ -79,12 +106,32 @@ describe("HaxfordApp rendering + app-level input", () => {
     expect(frame).toContain("agent running")
   })
 
-  test("StatusBar shows current turn number when running", async () => {
+  test("running shows an activity line with a verb, clock, and the way out", async () => {
     const { store, inst } = mount()
     store.dispatch({ type: "turn.start", turn: 7 })
     await flush()
     const frame = inst.lastFrame() ?? ""
-    expect(frame).toContain("turn 7")
+    expect(frame).toContain("thinking")
+    expect(frame).toContain("esc to interrupt")
+    // The turn counter is gone: no reference harness surfaces it.
+    expect(frame).not.toContain("turn 7")
+  })
+
+  test("activity line names the running tool once one starts", async () => {
+    const { store, inst } = mount()
+    store.dispatch({ type: "turn.start", turn: 1 })
+    store.dispatch({
+      type: "message.updated",
+      message: {
+        id: "a1", sessionID: "s", role: "assistant", time: { created: 0 },
+        parts: [{
+          id: "t1", type: "tool", tool: "bash", callID: "c1",
+          state: { status: "running", input: {}, time: { start: 0 } },
+        }],
+      },
+    })
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("bash")
   })
 
   test("Esc while running calls onAbort (host owns AbortController)", async () => {
@@ -290,5 +337,38 @@ describe("SlashAutocomplete popup", () => {
     // Exactly one selected row, and it is the /mode row.
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain("/mode")
+  })
+})
+
+describe("autocomplete submission safety", () => {
+  test("exact single match deactivates the popup so Enter submits", () => {
+    expect(isExactCommandMatch([COMMANDS[0]!], "/help")).toBe(true)
+    expect(isExactCommandMatch([COMMANDS[0]!], "  /HELP  ")).toBe(true)
+    // Partial prefix ("/e" -> /exit) must NOT count as exact.
+    expect(isExactCommandMatch(COMMANDS.filter((c) => c.command.startsWith("/e")), "/e")).toBe(false)
+    // Multiple matches are never an exact match.
+    expect(isExactCommandMatch(COMMANDS.filter((c) => c.command.startsWith("/m")), "/m")).toBe(false)
+    expect(isExactCommandMatch([], "")).toBe(false)
+  })
+
+  test("composer handle writes completions into the real input", () => {
+    const onChange: string[] = []
+    const handleRef: React.MutableRefObject<ComposerHandle | undefined> = {
+      current: undefined,
+    }
+    const inst = render(
+      React.createElement(Composer, {
+        disabled: false,
+        onSubmit: () => {},
+        onValueChange: (v: string) => onChange.push(v),
+        handleRef,
+      }),
+    )
+    expect(handleRef.current).toBeDefined()
+    handleRef.current?.set("/mode ")
+    // The imperative set() reseeds the uncontrolled TextInput and reports the
+    // new value through onValueChange - this is what makes completion work.
+    expect(onChange.at(-1)).toBe("/mode ")
+    inst.unmount()
   })
 })

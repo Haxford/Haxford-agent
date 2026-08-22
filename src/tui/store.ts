@@ -25,6 +25,9 @@ export interface TuiStore {
 export function createTuiStore(initial: Message[]): TuiStore {
   let state: TuiState = fromMessages(initial)
   const listeners = new Set<() => void>()
+  // Session generation. The transcript keys its <Static> region on this so a
+  // reset (which shrinks the message list) remounts rather than re-printing.
+  let epoch = 0
 
   const notify = (): void => {
     for (const l of listeners) l()
@@ -46,7 +49,10 @@ export function createTuiStore(initial: Message[]): TuiStore {
     reset(messages: Message[]): void {
       // Full reset: fresh state seeded with the given messages. Notices and
       // usage/turn counters are cleared. The host may re-emit notices after.
-      state = fromMessages(messages)
+      // The epoch bump tells the transcript to remount its <Static> region:
+      // the message list just shrank, and Ink's <Static> cannot handle that.
+      epoch += 1
+      state = { ...fromMessages(messages), epoch }
       notify()
     },
 

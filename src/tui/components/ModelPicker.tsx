@@ -1,6 +1,9 @@
 import { Box, Text, useInput, useStdout } from "ink"
 import React, { useMemo, useState } from "react"
 
+import { formatCtx } from "../format.ts"
+import { railProps, theme } from "../theme.ts"
+
 /** Default rows per page when terminal height is unknown. */
 const DEFAULT_PAGE_SIZE = 20
 
@@ -109,15 +112,8 @@ export function groupModels(models: ModelOption[]): ProviderGroup[] {
   return groups
 }
 
-/** Format a token count compactly: 200000 -> "200k", 1000000 -> "1M". */
-export function formatCtx(n: number): string {
-  if (n >= 1_000_000) {
-    const whole = n % 1_000_000 === 0
-    return `${whole ? n / 1_000_000 : (n / 1_000_000).toFixed(1)}M`
-  }
-  if (n >= 1000) return `${Math.round(n / 1000)}k`
-  return String(n)
-}
+/** Re-exported from `format.ts`, which Banner shares. */
+export { formatCtx }
 
 /** Format a per-million-token price: 0.15 -> "$0.15/M". */
 export function formatPrice(p: number): string {
@@ -235,10 +231,13 @@ export function ModelPicker({
       : `${filtered.length} result${filtered.length === 1 ? "" : "s"} · page ${safePage + 1}/${pages}${query ? ` · filter: ${query}` : ""} · type to filter`
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={2} paddingY={1}>
-      <Box gap={2}>
-        <Text bold color="magenta">{"switch model"}</Text>
-        <Text dimColor>{"↑/↓ navigate · ←/→ pg · enter select · esc cancel · type to filter"}</Text>
+    <Box flexDirection="column" {...railProps()} paddingLeft={1}>
+      {/* Title left, the way out dim on the right — opencode's dialog header. */}
+      <Box>
+        <Text bold>{"switch model"}</Text>
+        <Box flexGrow={1} justifyContent="flex-end">
+          <Text dimColor>{"esc"}</Text>
+        </Box>
       </Box>
       {all.length === 0 ? (
         <Text dimColor>{"no models configured"}</Text>
@@ -252,7 +251,7 @@ export function ModelPicker({
             let entryIdx = 0
             return groups.map((g) => (
               <Box key={g.provider} flexDirection="column">
-                <Text dimColor bold>{g.provider}</Text>
+                <Text bold color={theme.accent}>{g.provider}</Text>
                 {g.entries.map((opt) => {
                   const i = entryIdx++
                   const selected = i === safeCursor
@@ -261,20 +260,23 @@ export function ModelPicker({
                   const label = displayLabel(opt)
                   return (
                     <Box key={opt.spec} flexDirection="row" gap={1}>
-                      <Text color={selected ? "magenta" : "gray"}>
+                      <Text color={selected ? theme.accent : theme.muted}>
                         {selected ? "▸" : " "}
                       </Text>
+                      {/* A gutter dot marks the model already in use — distinct
+                          from the cursor, which marks what you are about to pick. */}
+                      <Text color={isCurrent ? theme.accent : undefined}>{isCurrent ? "●" : " "}</Text>
                       <Text
                         bold={selected}
-                        color={opt.available ? (selected ? "white" : undefined) : "gray"}
+                        color={opt.available ? (selected ? theme.accent : undefined) : theme.muted}
+                        dimColor={!opt.available}
                       >
                         {label}
                       </Text>
-                      {isCurrent ? <Text color="green">{"(current)"}</Text> : null}
-                      {!opt.available ? <Text color="gray">{"needs setup"}</Text> : null}
+                      {!opt.available ? <Text dimColor>{"needs setup"}</Text> : null}
                       {meta.length > 0 ? (
-                        <Box flexGrow={1}>
-                          <Text dimColor color={opt.available ? undefined : "gray"}> {meta}</Text>
+                        <Box flexGrow={1} justifyContent="flex-end">
+                          <Text dimColor>{meta}</Text>
                         </Box>
                       ) : null}
                     </Box>

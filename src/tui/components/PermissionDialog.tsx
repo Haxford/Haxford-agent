@@ -2,6 +2,7 @@ import { Box, Text } from "ink"
 import React from "react"
 
 import type { PermissionRequest } from "../../types/tool.ts"
+import { railProps, theme } from "../theme.ts"
 
 export interface PermissionDialogProps {
   request: PermissionRequest
@@ -11,14 +12,14 @@ export interface PermissionDialogProps {
 function actionKind(tool: string): { glyph: string; color: string; word: string } {
   switch (tool) {
     case "bash":
-      return { glyph: "$", color: "yellow", word: "run command" }
+      return { glyph: "$", color: theme.warning, word: "run command" }
     case "write":
     case "edit":
-      return { glyph: "✎", color: "blue", word: "edit file" }
+      return { glyph: "✎", color: theme.warning, word: "edit file" }
     case "task":
-      return { glyph: "▹", color: "magenta", word: "spawn subagent" }
+      return { glyph: "▹", color: theme.warning, word: "spawn subagent" }
     default:
-      return { glyph: "?", color: "yellow", word: tool }
+      return { glyph: "?", color: theme.warning, word: tool }
   }
 }
 
@@ -46,40 +47,38 @@ export function PermissionDialog({ request }: PermissionDialogProps): React.Reac
   const kind = actionKind(request.tool)
   const subject = subjectOf(request)
   const args = formatArgs(request.args)
+  // A warning-coloured left rail, not a box: permissions render inline in the
+  // transcript flow rather than as a modal card. Same idiom as tool blocks,
+  // one step louder — this is the one place a coloured rail is earned.
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={kind.color}
-      paddingX={2}
-      paddingY={1}
-      gap={1}
-    >
+    <Box flexDirection="column" {...railProps(kind.color, false)} paddingLeft={1}>
       <Box gap={1}>
-        <Text color={kind.color} bold>{kind.glyph}</Text>
+        <Text color={kind.color} bold>{"△"}</Text>
         <Text bold color={kind.color}>{kind.word}</Text>
         <Text dimColor>·</Text>
         <Text bold>{request.tool}</Text>
       </Box>
-      <Text bold>{request.title}</Text>
-      {subject !== undefined ? (
-        <Text dimColor>{subject}</Text>
-      ) : null}
-      <Box flexDirection="column">
-        <Text dimColor>{"args:"}</Text>
-        <Text color="gray">{args}</Text>
+      <Box marginTop={1}>
+        <Text bold wrap="truncate-end">{request.title}</Text>
       </Box>
-      <Box gap={3}>
+      {subject !== undefined ? (
+        <Text dimColor wrap="truncate-end">{subject}</Text>
+      ) : null}
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor>{"args:"}</Text>
+        <Text color={theme.muted}>{args}</Text>
+      </Box>
+      <Box gap={3} marginTop={1}>
         <Text>
-          <Text color="green" bold>{"[a]"}</Text>
+          <Text color={theme.success} bold>{"[a]"}</Text>
           {" allow once"}
         </Text>
         <Text>
-          <Text color="cyan" bold>{"[l]"}</Text>
+          <Text color={theme.accent} bold>{"[l]"}</Text>
           {" always (this session)"}
         </Text>
         <Text>
-          <Text color="red" bold>{"[d]"}</Text>
+          <Text color={theme.error} bold>{"[d]"}</Text>
           {" deny"}
         </Text>
       </Box>

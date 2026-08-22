@@ -1,18 +1,22 @@
-import { Box, Text, useInput } from "ink"
-import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react"
+import { Box, Static, Text, useInput } from "ink"
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
+import type { Message } from "../types/message.ts"
 import type { SessionInfo } from "../types/session.ts"
 import type { PermissionRequest } from "../types/tool.ts"
 import type { ApprovalBridge } from "./approval.ts"
 import { Banner, shortCwd } from "./components/Banner.tsx"
-import { Composer } from "./components/Composer.tsx"
+import { Composer, type ComposerHandle } from "./components/Composer.tsx"
 import { HelpPanel, HELP_TEXT, COMMANDS, type CommandRow } from "./components/HelpPanel.tsx"
 import { ModelPicker } from "./components/ModelPicker.tsx"
 import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { SessionPicker } from "./components/SessionPicker.tsx"
 import { SlashAutocomplete } from "./components/SlashAutocomplete.tsx"
-import { StatusBar } from "./components/StatusBar.tsx"
-import { Transcript } from "./components/Transcript.tsx"
+import { SpinnerProvider } from "./components/Spinner.tsx"
+import { ActivityLine, StatusBar } from "./components/StatusBar.tsx"
+import { MessageView, Transcript } from "./components/Transcript.tsx"
+import { splitTranscript } from "./state.ts"
+import { railProps, theme } from "./theme.ts"
 import type { TuiStore } from "./store.ts"
 
 /** Re-export HELP_TEXT (now sourced from HelpPanel) so tests import from app.tsx unchanged. */
@@ -97,11 +101,32 @@ export function takesArg(command: string): boolean {
   return !NO_ARG_COMMANDS.has(command)
 }
 
+/** True when the typed value exactly equals the single matched command. */
+export function isExactCommandMatch(matches: CommandRow[], value: string): boolean {
+  return matches.length === 1 && matches[0]!.command === value.trim().toLowerCase()
+}
+
 /** Match commands by case-insensitive prefix; returns the canonical rows. */
 export function matchCommands(prefix: string): CommandRow[] {
   const p = prefix.trim().toLowerCase()
   if (p.length === 0 || !p.startsWith("/")) return []
   return COMMANDS.filter((c) => c.command.startsWith(p) || c.command.toLowerCase().startsWith(p))
+}
+
+/**
+ * Label for the activity line while a run is in flight: the tool currently
+ * executing, else a generic verb. Naming the tool is what turns a bare spinner
+ * into something you can read at a glance.
+ */
+export function activityVerb(messages: Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const parts = messages[i]?.parts ?? []
+    for (let j = parts.length - 1; j >= 0; j--) {
+      const part = parts[j]
+      if (part?.type === "tool" && part.state.status === "running") return part.tool
+    }
+  }
+  return "thinking"
 }
 
 /** The next command after moving the cursor with clamping (wraps within 0..n-1). */
@@ -128,7 +153,11 @@ export interface HaxfordAppProps {
   models: string[] | import("./components/ModelPicker.tsx").ModelOption[]
   /** Working directory, shown in the banner and status bar. Optional so unwired hosts still typecheck. */
   cwd?: string
-  /** Current session id, shown short-form in the status bar. Optional. */
+  /**
+   * Current session id. Accepted for host compatibility but deliberately not
+   * displayed: none of pi, opencode, or Claude Code surfaces a raw session id,
+   * and it competed for space with the numbers that matter.
+   */
   sessionID?: string
   /** Context window limit for the active model, for the ctx% indicator. Optional. */
   contextLimit?: number
@@ -185,7 +214,6 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     mode,
     models,
     cwd,
-    sessionID,
     contextLimit,
     onPrompt,
     onAbort,
@@ -214,7 +242,12 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     [composerValue],
   )
   const [acCursor, setAcCursor] = useState(0)
-  const acActive = acMatches.length > 0
+  // Imperative handle into the composer so completions/clears reach the real
+  // (uncontrolled) TextInput instead of only the matching state.
+  const composerRef = useRef<ComposerHandle | undefined>(undefined)
+  // Exact single match (user typed a full command) => popup yields Enter back
+  // to normal submission; otherwise typing "/e" + enter would instantly exit.
+  const acActive = acMatches.length > 0 && !isExactCommandMatch(acMatches, composerValue)
 
   // Reset the popup cursor when the typed value changes.
   useEffect(() => { setAcCursor(0) }, [composerValue])
@@ -268,7 +301,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     // mode build -> auto -> plan -> build (opencode-style). The host owns the
     // actual mode state and rerenders. Skip when the autocomplete popup is up
     // (the Composer routes tab to the popup instead).
-    if (key.tab && !running && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker) {
+    if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker) {
       onModeChange(nextMode(mode))
     }
   })
@@ -377,92 +410,163 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
   const onPopupAccept = useCallback(() => {
     const row = acMatches[acCursor] ?? acMatches[0]
     if (row === undefined) return
-    if (!takesArg(row.command)) {
-      // No-arg command: submit immediately.
-      submit(row.command)
-      setComposerValue("")
-    } else {
-      // Arg command: complete the token (with a trailing space for args) and
-      // keep the cursor in the composer so the user can type the argument.
-      const completed = `${row.command} `
-      setComposerValue(completed)
-    }
-  }, [acCursor, acMatches, submit])
+    // Always complete into the real input; no-arg commands then submit with
+    // a natural Enter (never auto-run from a partial prefix like "/e").
+    const completed = takesArg(row.command) ? `${row.command} ` : row.command
+    composerRef.current?.set(completed)
+    setComposerValue(completed)
+  }, [acCursor, acMatches])
 
+  // The composer's rail colour carries the mode now, so the placeholder no
+  // longer has to spell it out — except in plan mode, where the read-only
+  // constraint is worth stating.
   const composerPlaceholder = composerDisabled
     ? pending !== undefined
       ? "awaiting approval…"
       : "agent running…"
     : mode === "plan"
-      ? "(plan) read-only research — edits require approval · type a prompt, /help for commands"
-      : `(${mode}) type a prompt, /help for commands · tab to cycle mode`
+      ? "plan mode — read-only research; edits require approval"
+      : "ask anything, or / for commands"
+
+  // Ink's <Static> prints settled messages once and never re-renders them, so
+  // streaming costs one message's worth of diffing instead of the whole
+  // transcript's. Only the tail stays live. See splitTranscript for why the
+  // prefix is safe to freeze, and why the epoch key is needed on reset.
+  const { finalized, live } = useMemo(
+    () => splitTranscript(state.messages),
+    [state.messages],
+  )
+
+  // Epoch millis of the current run, for the activity line's clock. Recomputed
+  // only on an idle -> running edge.
+  const [runStartedAt, setRunStartedAt] = useState(() => Date.now())
+  useEffect(() => {
+    if (running) setRunStartedAt(Date.now())
+  }, [running])
+
+  const showBanner =
+    state.messages.length === 0 && state.notices.length === 0 && pending === undefined
+  const overlay =
+    ui.showHelp || ui.showModelPicker || ui.showSessions.kind !== "idle" || pending !== undefined
 
   return (
-    <Box flexDirection="column" gap={1}>
-      {state.messages.length === 0 && state.notices.length === 0 && !pending ? (
-        <Banner model={model} mode={mode} cwd={cwd ?? shortCwd(".")} />
-      ) : null}
+    <SpinnerProvider active={running}>
+      {/*
+        Layout, top to bottom: settled transcript (Static) -> live tail ->
+        overlays -> activity line -> composer -> status bar. The status bar sits
+        *below* the composer, which is where pi, opencode, and Claude Code all
+        put it. The root has no uniform `gap`: spacing is applied per section so
+        it carries grouping information instead of flattening everything.
 
-      <Transcript messages={state.messages} notices={state.notices} />
+        <Static> writes above Ink's managed region regardless of JSX position,
+        so everything after it must be the only live content — which this
+        ordering already guarantees.
+      */}
+      <Static key={state.epoch} items={finalized}>
+        {(m) => (
+          <Box key={m.id} flexDirection="column" marginTop={1}>
+            <MessageView message={m} />
+          </Box>
+        )}
+      </Static>
 
-      {pending !== undefined ? <PermissionDialog request={pending} /> : null}
+      <Box flexDirection="column">
+        {showBanner ? (
+          <Banner model={model} cwd={cwd ?? shortCwd(".")} contextLimit={contextLimit} />
+        ) : null}
 
-      {ui.showHelp ? <HelpPanel /> : null}
+        {live.length > 0 || state.notices.length > 0 ? (
+          <Box marginTop={finalized.length > 0 ? 1 : 0}>
+            <Transcript messages={live} notices={state.notices} />
+          </Box>
+        ) : null}
 
-      {ui.showSessions.kind === "loading" ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
-          <Text color="cyan">{"loading sessions…"}</Text>
+        {pending !== undefined ? (
+          <Box marginTop={1}>
+            <PermissionDialog request={pending} />
+          </Box>
+        ) : null}
+
+        {ui.showHelp ? (
+          <Box marginTop={1}>
+            <HelpPanel />
+          </Box>
+        ) : null}
+
+        {ui.showSessions.kind === "loading" ? (
+          <Box marginTop={1} {...railProps()} paddingLeft={1}>
+            <Text dimColor>{"loading sessions…"}</Text>
+          </Box>
+        ) : null}
+
+        {ui.showSessions.kind === "ready" ? (
+          <Box marginTop={1}>
+            <SessionPicker
+              sessions={ui.showSessions.sessions}
+              onSelect={selectSession}
+              onCancel={closeSessions}
+            />
+          </Box>
+        ) : null}
+
+        {ui.showSessions.kind === "error" ? (
+          <Box flexDirection="column" marginTop={1} {...railProps(theme.error, false)} paddingLeft={1}>
+            <Text color={theme.error}>{"failed to list sessions"}</Text>
+            <Text dimColor>{ui.showSessions.message}</Text>
+            <Text dimColor>{"esc to close"}</Text>
+          </Box>
+        ) : null}
+
+        {ui.showModelPicker ? (
+          <Box marginTop={1}>
+            <ModelPicker
+              models={models}
+              current={model}
+              onSelect={selectModel}
+              onCancel={closeModelPicker}
+            />
+          </Box>
+        ) : null}
+
+        {/* Transient while a run is in flight: verb, elapsed, tokens, the way out. */}
+        {running ? (
+          <Box marginTop={1}>
+            <ActivityLine
+              verb={activityVerb(state.messages)}
+              startedAt={runStartedAt}
+              usage={state.usage}
+            />
+          </Box>
+        ) : null}
+
+        <Box marginTop={running || overlay || live.length > 0 || showBanner ? 1 : 0}>
+          <Composer
+            disabled={composerDisabled}
+            mode={mode}
+            onSubmit={submit}
+            onValueChange={setComposerValue}
+            handleRef={composerRef}
+            placeholder={composerPlaceholder}
+            popupActive={acActive}
+            onPopupNavigate={onPopupNavigate}
+            onPopupAccept={onPopupAccept}
+            onPopupDismiss={onPopupDismiss}
+            autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
+          />
         </Box>
-      ) : null}
 
-      {ui.showSessions.kind === "ready" ? (
-        <SessionPicker
-          sessions={ui.showSessions.sessions}
-          onSelect={selectSession}
-          onCancel={closeSessions}
+        <StatusBar
+          model={model}
+          mode={mode}
+          status={state.status}
+          usage={state.usage}
+          contextLimit={contextLimit}
+          cwd={cwd !== undefined ? shortCwd(cwd) : undefined}
+          error={state.error}
+          endReason={state.endReason}
         />
-      ) : null}
-
-      {ui.showSessions.kind === "error" ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={2} paddingY={1}>
-          <Text color="red">{"failed to list sessions"}</Text>
-          <Text dimColor>{ui.showSessions.message}</Text>
-          <Text dimColor>{"press Esc to close"}</Text>
-        </Box>
-      ) : null}
-
-      {ui.showModelPicker ? (
-        <ModelPicker
-          models={models}
-          current={model}
-          onSelect={selectModel}
-          onCancel={closeModelPicker}
-        />
-      ) : null}
-
-      <StatusBar
-        model={model}
-        mode={mode}
-        status={state.status}
-        turn={state.turn}
-        usage={state.usage}
-        contextLimit={contextLimit}
-        sessionID={sessionID}
-        error={state.error}
-        endReason={state.endReason}
-      />
-      <Composer
-        disabled={composerDisabled}
-        onSubmit={submit}
-        onValueChange={setComposerValue}
-        placeholder={composerPlaceholder}
-        popupActive={acActive}
-        onPopupNavigate={onPopupNavigate}
-        onPopupAccept={onPopupAccept}
-        onPopupDismiss={onPopupDismiss}
-        autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
-      />
-    </Box>
+      </Box>
+    </SpinnerProvider>
   )
 }
 

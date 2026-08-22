@@ -125,12 +125,13 @@ Usage:
       if (lastShown < all.length) {
         notes.push(
           `[Showing lines ${offset}-${lastShown} of ${all.length}. ` +
-            `Continue with offset: ${lastShown + 1}.]`,
+            `Use offset=${lastShown + 1} to continue.]`,
         )
       }
       if (longLines > 0) {
         notes.push(
-          `[${longLines} line(s) longer than ${MAX_LINE_CHARS} chars were truncated.]`,
+          `[${longLines} line(s) longer than ${MAX_LINE_CHARS} chars were truncated. ` +
+            `To see one in full, use bash: sed -n '<line>p' ${path}]`,
         )
       }
 

@@ -1,6 +1,7 @@
 import { Box, Text } from "ink"
 import React from "react"
 
+import { railProps, theme } from "../theme.ts"
 import type { CommandRow } from "./HelpPanel.tsx"
 
 export interface SlashAutocompleteProps {
@@ -24,14 +25,18 @@ export function SlashAutocomplete({ matches, cursor }: SlashAutocompleteProps): 
   const end = Math.min(matches.length, start + max)
   const shown = matches.slice(start, end)
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
+    <Box flexDirection="column" {...railProps()} paddingLeft={1}>
       {shown.map((row, i) => {
         const idx = start + i
         const selected = idx === safeCursor
         return (
           <Box key={row.command} gap={1}>
-            <Text color={selected ? "cyan" : "gray"}>{selected ? "▸" : " "}</Text>
-            <Text bold={selected} color={selected ? "white" : "cyan"}>{row.command.padEnd(10)}</Text>
+            <Text color={selected ? theme.accent : theme.muted}>{selected ? "▸" : " "}</Text>
+            <Box width={10} flexShrink={0}>
+              <Text bold={selected} color={selected ? theme.accent : undefined} dimColor={!selected}>
+                {row.command}
+              </Text>
+            </Box>
             <Text dimColor>{row.description}</Text>
           </Box>
         )

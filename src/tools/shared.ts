@@ -56,6 +56,87 @@ export function truncateText(text: string, max: number): Truncation {
   return { text: text.slice(0, max), truncated: true }
 }
 
+export interface TailTruncation {
+  text: string
+  truncated: boolean
+  /** Which limit bit first, or null when nothing was dropped. */
+  truncatedBy: "lines" | "chars" | null
+  totalChars: number
+  totalLines: number
+  /** Lines actually present in `text`. */
+  shownLines: number
+}
+
+export interface TailLimits {
+  maxChars: number
+  maxLines: number
+}
+
+/** Count lines the way a reader would: a trailing newline ends the last line. */
+function countLines(text: string): number {
+  if (text === "") return 0
+  let lines = 1
+  for (let i = 0; i < text.length; i++) if (text[i] === "\n") lines++
+  // A trailing newline closes the final line rather than opening a new one.
+  return text.endsWith("\n") ? lines - 1 : lines
+}
+
+/**
+ * Keep the END of a long output rather than the start.
+ *
+ * Program output puts what matters last: the failing assertion, the stack
+ * trace, the exit summary. Keeping the head and dropping the tail — which is
+ * what a plain `slice(0, max)` does — throws away exactly the part the model
+ * needs and leaves it the build spam it does not.
+ *
+ * Both limits apply; whichever bites first is reported. When the character
+ * limit cuts mid-line the partial leading line is dropped, so the result
+ * always starts at a line boundary.
+ */
+export function truncateTail(text: string, limits: TailLimits): TailTruncation {
+  const totalChars = text.length
+  const totalLines = countLines(text)
+
+  if (totalChars <= limits.maxChars && totalLines <= limits.maxLines) {
+    return {
+      text,
+      truncated: false,
+      truncatedBy: null,
+      totalChars,
+      totalLines,
+      shownLines: totalLines,
+    }
+  }
+
+  let out = text
+  let truncatedBy: "lines" | "chars" = "lines"
+
+  if (totalLines > limits.maxLines) {
+    const lines = text.split("\n")
+    // Drop the trailing empty element a final newline produces before slicing,
+    // so `maxLines` counts real lines.
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
+    out = lines.slice(-limits.maxLines).join("\n")
+  }
+
+  if (out.length > limits.maxChars) {
+    truncatedBy = "chars"
+    out = out.slice(out.length - limits.maxChars)
+    // The slice almost certainly landed mid-line; drop that fragment.
+    const firstBreak = out.indexOf("\n")
+    if (firstBreak !== -1) out = out.slice(firstBreak + 1)
+  }
+
+  return {
+    text: out,
+    truncated: true,
+    truncatedBy,
+    totalChars,
+    totalLines,
+    shownLines: countLines(out),
+  }
+}
+
 /** Directories that would otherwise flood glob/grep results. */
 const NOISE = [".git", "node_modules"]
 

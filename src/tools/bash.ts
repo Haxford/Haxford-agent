@@ -1,10 +1,13 @@
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
-import { errorText, truncateText } from "./shared.ts"
+import { errorText, truncateTail } from "./shared.ts"
 
 const DEFAULT_TIMEOUT = 120_000
 const MAX_TIMEOUT = 600_000
 const MAX_OUTPUT_CHARS = 50_000
+const MAX_OUTPUT_LINES = 2_000
 
 const parameters = z.object({
   command: z.string().describe("The shell command to run."),
@@ -24,6 +27,54 @@ const parameters = z.object({
 
 type Args = z.infer<typeof parameters>
 
+/**
+ * Read a piped stream into a shared sink.
+ *
+ * stdout and stderr are drained concurrently into ONE array, so chunks land
+ * in arrival order and interleaved output keeps its shape — a warning printed
+ * between two progress lines reads where it happened rather than being
+ * relocated to a stderr block at the end.
+ */
+async function drain(
+  stream: ReadableStream<Uint8Array>,
+  sink: string[],
+): Promise<void> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value !== undefined) sink.push(decoder.decode(value, { stream: true }))
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const tail = decoder.decode()
+  if (tail.length > 0) sink.push(tail)
+}
+
+/**
+ * Write the full output somewhere the model can go back for it.
+ *
+ * Returns the path, or null when the spill failed — a truncation notice
+ * without a working path is worse than one that just says it truncated, so
+ * callers fall back rather than surfacing a filesystem error the model
+ * cannot act on.
+ */
+async function spill(text: string): Promise<string | null> {
+  const path = join(
+    tmpdir(),
+    `haxford-bash-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}.log`,
+  )
+  try {
+    await Bun.write(path, text)
+    return path
+  } catch {
+    return null
+  }
+}
+
 export const bashTool: Tool<Args> = {
   id: "bash",
   description: `Run a shell command and return its combined output.
@@ -35,9 +86,12 @@ Usage:
 - Quote paths containing spaces: cd "/a/b c".
 - timeout is in milliseconds (default ${DEFAULT_TIMEOUT}, max ${MAX_TIMEOUT}). A command
   that exceeds it is killed and reported as timed out.
-- stdout and stderr are combined. Output longer than ${MAX_OUTPUT_CHARS} characters is
-  truncated, and the output says so — pipe through head/tail/grep to narrow
-  large output instead of dumping it.
+- stdout and stderr are combined in the order they were written.
+- Output is capped at the LAST ${MAX_OUTPUT_LINES} lines or ${MAX_OUTPUT_CHARS} characters,
+  whichever bites first — the end of a run is where the failure and the exit
+  summary are. When output is truncated the full text is written to a temp
+  file and the path is given to you: read or grep that file for the rest
+  instead of re-running the command.
 - A non-zero exit status is reported to you, not thrown. Read the output and
   decide what to do.
 - Prefer the dedicated read, glob, and grep tools over cat, find, and grep
@@ -48,6 +102,8 @@ Usage:
   ci, not a prompt-driven install), and pass flags like --yes or --no-pager
   where a command would otherwise wait for input or open a pager.
 - The user is asked to approve the command before it runs, and may decline.
+  Each part of a chained command is approved separately, so a rule covering
+  the first part does not cover what follows it.
 - Never run commands that are destructive or far-reaching without being asked
   to, and do not use this tool to work around a declined action.`,
   parameters,
@@ -98,13 +154,12 @@ Usage:
       // An aborted turn must not leave a child process running.
       ctx.abort.addEventListener("abort", kill, { once: true })
 
-      let stdout: string
-      let stderr: string
+      const chunks: string[] = []
       let exitCode: number
       try {
-        ;[stdout, stderr, exitCode] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
+        ;[, , exitCode] = await Promise.all([
+          drain(proc.stdout, chunks),
+          drain(proc.stderr, chunks),
           proc.exited,
         ])
       } finally {
@@ -113,14 +168,24 @@ Usage:
       }
 
       const duration = Date.now() - started
-      const combined = [stdout, stderr].filter((part) => part !== "").join("\n")
-      const { text, truncated } = truncateText(combined, MAX_OUTPUT_CHARS)
+      const combined = chunks.join("")
+      const tail = truncateTail(combined, {
+        maxChars: MAX_OUTPUT_CHARS,
+        maxLines: MAX_OUTPUT_LINES,
+      })
 
       const notes: string[] = []
-      if (truncated) {
+      let fullOutputPath: string | null = null
+      if (tail.truncated) {
+        fullOutputPath = await spill(combined)
+        const scope =
+          tail.truncatedBy === "lines"
+            ? `Showing the last ${tail.shownLines} of ${tail.totalLines} lines`
+            : `Showing the last ${tail.text.length} of ${tail.totalChars} characters`
         notes.push(
-          `[Output truncated to ${MAX_OUTPUT_CHARS} of ${combined.length} characters. ` +
-            `Re-run filtered through grep/head/tail to see the rest.]`,
+          fullOutputPath
+            ? `[${scope}. Full output: ${fullOutputPath} — read or grep that file for the rest.]`
+            : `[${scope}. Re-run filtered through grep/head/tail to see the rest.]`,
         )
       }
       if (timedOut) {
@@ -129,7 +194,7 @@ Usage:
         notes.push(`[Exit code ${exitCode}]`)
       }
 
-      const body = text === "" ? "(no output)" : text
+      const body = tail.text === "" ? "(no output)" : tail.text
       return {
         title,
         output: notes.length ? `${body}\n\n${notes.join("\n")}` : body,
@@ -137,7 +202,11 @@ Usage:
           command,
           exitCode,
           timedOut,
-          truncated,
+          truncated: tail.truncated,
+          truncatedBy: tail.truncatedBy,
+          totalLines: tail.totalLines,
+          totalChars: tail.totalChars,
+          ...(fullOutputPath ? { fullOutputPath } : {}),
           durationMs: duration,
         },
       }

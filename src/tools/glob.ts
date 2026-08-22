@@ -11,6 +11,12 @@ const parameters = z.object({
     .string()
     .optional()
     .describe("Absolute directory to search in. Defaults to the working directory."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(`Maximum results to return. Defaults to ${LIMIT}.`),
 })
 
 type Args = z.infer<typeof parameters>
@@ -25,8 +31,9 @@ Usage:
 - path, if given, MUST be absolute; it defaults to the working directory.
 - Results are absolute paths sorted by modification time, most recent first,
   so the files someone has been working on come first.
-- At most ${LIMIT} results are returned; the output says so when it truncates.
-  Narrow the pattern rather than paging.
+- At most ${LIMIT} results are returned by default; the output says so when it
+  truncates and tells you the limit to pass for more. Prefer narrowing the
+  pattern over raising the limit.
 - .git and node_modules are skipped unless your pattern names them.
 - Use this to find files by name. To search file CONTENTS use grep.
 - When you are exploring, run several globs in parallel in one step.`,
@@ -75,11 +82,13 @@ Usage:
       )
       withTime.sort((a, b) => b.mtime - a.mtime)
 
-      const shown = withTime.slice(0, LIMIT).map((entry) => entry.path)
-      const truncated = withTime.length > LIMIT
+      const limit = args.limit ?? LIMIT
+      const shown = withTime.slice(0, limit).map((entry) => entry.path)
+      const truncated = withTime.length > limit
 
       const notes = truncated
-        ? `\n\n[Showing ${LIMIT} of ${withTime.length} matches. Narrow the pattern to see the rest.]`
+        ? `\n\n[Showing ${limit} of ${withTime.length} matches. ` +
+          `Use limit=${limit * 2} for more, or narrow the pattern.]`
         : ""
 
       return {
@@ -89,6 +98,7 @@ Usage:
           pattern: args.pattern,
           root,
           count: withTime.length,
+          limit,
           truncated,
         },
       }

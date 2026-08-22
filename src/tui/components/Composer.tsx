@@ -2,11 +2,29 @@ import { Box, Text, useInput } from "ink"
 import { TextInput } from "@inkjs/ui"
 import React, { useCallback, useState } from "react"
 
+import { modeColor, railProps, theme, type ThemeMode } from "../theme.ts"
+
+export interface ComposerHandle {
+  /** Programmatically replace the input contents (completion, clear). */
+  set(value: string): void
+}
+
 export interface ComposerProps {
   /** Disable input while the agent loop is running. */
   disabled: boolean
+  /**
+   * Permission mode. Rendered as the composer's rail colour — the primary
+   * mode indicator, always visible and costing zero lines. Defaults to
+   * "build" so standalone renders (unit tests) need not supply it.
+   */
+  mode?: ThemeMode
   /** Called when the user submits a non-empty line. */
   onSubmit: (value: string) => void
+  /**
+   * Ref receiving an imperative { set } handle. The underlying TextInput is
+   * uncontrolled, so programmatic changes must go through here to be visible.
+   */
+  handleRef?: React.MutableRefObject<ComposerHandle | undefined>
   /** Called on every keystroke with the current input value (for autocomplete). */
   onValueChange?: (value: string) => void
   /** Placeholder text shown when empty. */
@@ -33,6 +51,7 @@ export interface ComposerProps {
  */
 export function Composer({
   disabled,
+  mode = "build",
   onSubmit,
   onValueChange,
   placeholder,
@@ -41,6 +60,7 @@ export function Composer({
   onPopupNavigate,
   onPopupAccept,
   onPopupDismiss,
+  handleRef,
 }: ComposerProps): React.ReactElement {
   const [history, setHistory] = useState<string[]>([])
   const [cursor, setCursor] = useState<number>(-1) // -1 = "current typing"
@@ -52,6 +72,12 @@ export function Composer({
     setResetKey((k) => k + 1)
     onValueChange?.(next)
   }, [onValueChange])
+
+  React.useImperativeHandle(
+    handleRef,
+    () => ({ set: reseed }),
+    [reseed],
+  )
 
   const commit = useCallback(
     (raw: string) => {
@@ -96,16 +122,20 @@ export function Composer({
     }
   })
 
+  // The rail carries the mode; it dims while input is locked so a disabled
+  // composer reads as inert without a second signal.
+  const rail = modeColor(mode)
+
   return (
     <Box flexDirection="column">
       {autocomplete}
-      <Box gap={1}>
-        <Text color={disabled ? "gray" : "green"}>{disabled ? "•" : ">"}</Text>
+      <Box {...railProps(rail, disabled)} paddingLeft={1} gap={1}>
+        <Text color={disabled ? theme.muted : rail}>{disabled ? "•" : "›"}</Text>
         <TextInput
           key={resetKey}
           isDisabled={disabled}
           defaultValue={seed}
-          placeholder={placeholder ?? (disabled ? "agent running…" : "type a prompt, /help for commands")}
+          placeholder={placeholder ?? (disabled ? "agent running…" : "ask anything, or / for commands")}
           onSubmit={commit}
           onChange={onValueChange}
         />

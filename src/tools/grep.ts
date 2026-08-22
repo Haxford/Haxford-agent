@@ -17,6 +17,12 @@ const parameters = z.object({
     .string()
     .optional()
     .describe('Glob filter for which files to search, e.g. "*.ts" or "**/*.{js,ts}".'),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(`Maximum matches to return. Defaults to ${LIMIT}.`),
 })
 
 type Args = z.infer<typeof parameters>
@@ -39,6 +45,7 @@ async function ripgrep(
   pattern: string,
   root: string,
   include: string | undefined,
+  limit: number,
   signal: AbortSignal,
 ): Promise<Match[] | null> {
   if (!Bun.which("rg")) return null
@@ -49,7 +56,7 @@ async function ripgrep(
     "--no-heading",
     "--color=never",
     "--max-count",
-    String(LIMIT),
+    String(limit),
   ]
   if (include) cmd.push("--glob", include)
   cmd.push("-e", pattern, root)
@@ -114,6 +121,7 @@ async function scanFiles(
   regex: RegExp,
   root: string,
   include: string | undefined,
+  limit: number,
   signal: AbortSignal,
 ): Promise<Match[]> {
   const pattern = includeToGlob(include)
@@ -122,7 +130,7 @@ async function scanFiles(
 
   for await (const entry of glob.scan({ cwd: root, onlyFiles: true })) {
     if (signal.aborted) break
-    if (matches.length >= LIMIT) break
+    if (matches.length >= limit) break
     if (isNoisePath(entry, pattern)) continue
 
     const path = join(root, entry)
@@ -139,7 +147,7 @@ async function scanFiles(
         regex.lastIndex = 0
         if (!regex.test(text)) continue
         matches.push({ path, line: i + 1, text: clampLine(text) })
-        if (matches.length >= LIMIT) break
+        if (matches.length >= limit) break
       }
     } catch {
       // Unreadable file — skip it rather than failing the whole search.
@@ -160,8 +168,9 @@ Usage:
   every text file under the search directory is searched.
 - path, if given, MUST be absolute; it defaults to the working directory.
 - Output is one match per line as file:line: content. Long lines are clipped.
-- At most ${LIMIT} matches are returned; the output says so when it truncates.
-  Tighten the pattern or the include filter rather than paging.
+- At most ${LIMIT} matches are returned by default; the output says so when it
+  truncates and tells you the limit to pass for more. Prefer tightening the
+  pattern or the include filter over raising the limit.
 - Binary files, .git, and node_modules are skipped. Where ripgrep is
   available it is used, so .gitignore'd files are skipped too.
 - Use this to search contents. To find files by NAME use glob.
@@ -186,12 +195,13 @@ Usage:
     }
 
     const root = args.path ? resolve(args.path) : ctx.cwd
+    const limit = args.limit ?? LIMIT
 
     try {
-      const viaRg = await ripgrep(args.pattern, root, args.include, ctx.abort)
+      const viaRg = await ripgrep(args.pattern, root, args.include, limit, ctx.abort)
       const engine = viaRg ? "ripgrep" : "fallback"
       const matches =
-        viaRg ?? (await scanFiles(regex, root, args.include, ctx.abort))
+        viaRg ?? (await scanFiles(regex, root, args.include, limit, ctx.abort))
 
       if (matches.length === 0) {
         return {
@@ -203,13 +213,14 @@ Usage:
         }
       }
 
-      const shown = matches.slice(0, LIMIT)
+      const shown = matches.slice(0, limit)
       const body = shown
         .map((match) => `${match.path}:${match.line}: ${match.text}`)
         .join("\n")
-      const truncated = matches.length > LIMIT
+      const truncated = matches.length > limit
       const notes = truncated
-        ? `\n\n[Showing the first ${LIMIT} matches. Narrow the pattern or include filter to see the rest.]`
+        ? `\n\n[Showing the first ${limit} matches. ` +
+          `Use limit=${limit * 2} for more, or narrow the pattern or include filter.]`
         : ""
 
       return {
@@ -219,6 +230,7 @@ Usage:
           pattern: args.pattern,
           root,
           count: shown.length,
+          limit,
           truncated,
           engine,
         },

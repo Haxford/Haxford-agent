@@ -5,7 +5,6 @@ import {
   contextPercent,
   modeBadge,
   reasonLabel,
-  shortSession,
 } from "../src/tui/components/StatusBar.tsx"
 import {
   displayLabel,
@@ -36,10 +35,12 @@ describe("Banner.shortCwd", () => {
 })
 
 describe("StatusBar.modeBadge", () => {
-  test("each mode has a distinct color + bracketed label", () => {
-    expect(modeBadge("build")).toEqual({ text: "[build]", color: "cyan" })
-    expect(modeBadge("auto")).toEqual({ text: "[auto]", color: "green" })
-    expect(modeBadge("plan")).toEqual({ text: "[plan]", color: "magenta" })
+  // Brackets are gone: the word is already a label because of its color, and
+  // the composer's rail is now the primary mode indicator.
+  test("each mode has a distinct theme color and an unbracketed label", () => {
+    expect(modeBadge("build")).toEqual({ text: "build", color: "cyan" })
+    expect(modeBadge("auto")).toEqual({ text: "auto", color: "green" })
+    expect(modeBadge("plan")).toEqual({ text: "plan", color: "magenta" })
   })
 })
 
@@ -58,19 +59,6 @@ describe("StatusBar.contextPercent", () => {
   })
   test("counts reasoning toward used", () => {
     expect(contextPercent({ input: 100_000, output: 0, reasoning: 50_000 }, 200_000)).toBe(75)
-  })
-})
-
-describe("StatusBar.shortSession", () => {
-  test("8-char prefix", () => {
-    expect(shortSession("aaaabbbb-cccc-dddd")).toBe("aaaabbbb")
-  })
-  test("returns short ids unchanged", () => {
-    expect(shortSession("aaaabbbb")).toBe("aaaabbbb")
-    expect(shortSession("ab")).toBe("ab")
-  })
-  test("undefined for undefined", () => {
-    expect(shortSession(undefined)).toBeUndefined()
   })
 })
 

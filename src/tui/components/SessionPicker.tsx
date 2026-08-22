@@ -2,6 +2,7 @@ import { Box, Text, useInput } from "ink"
 import React, { useState } from "react"
 
 import type { SessionInfo } from "../../types/session.ts"
+import { railProps, theme } from "../theme.ts"
 
 export interface SessionPickerProps {
   sessions: SessionInfo[]
@@ -49,10 +50,12 @@ export function SessionPicker({
   })
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1}>
-      <Box gap={2}>
-        <Text bold color="cyan">{"resume session"}</Text>
-        <Text dimColor>{"↑/↓ navigate · enter select · esc cancel"}</Text>
+    <Box flexDirection="column" {...railProps()} paddingLeft={1}>
+      <Box>
+        <Text bold>{"resume session"}</Text>
+        <Box flexGrow={1} justifyContent="flex-end">
+          <Text dimColor>{"esc"}</Text>
+        </Box>
       </Box>
       {sessions.length === 0 ? (
         <Text dimColor>{"no sessions found"}</Text>
@@ -62,10 +65,10 @@ export function SessionPicker({
             const selected = i === safeCursor
             return (
               <Box key={s.id} gap={1}>
-                <Text color={selected ? "cyan" : "gray"}>
+                <Text color={selected ? theme.accent : theme.muted}>
                   {selected ? "▸" : " "}
                 </Text>
-                <Text bold={selected} color={selected ? "white" : undefined}>
+                <Text bold={selected} color={selected ? theme.accent : undefined}>
                   {s.title}
                 </Text>
                 <Text dimColor>{relativeTime(s.time.updated)}</Text>
