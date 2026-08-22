@@ -8,20 +8,31 @@ Single-process terminal AI coding agent that works across your whole codebase �
 
 ## Install
 
-One line (downloads a prebuilt binary from [Releases](https://github.com/Haxford/Haxford-agent/releases)):
+One line — downloads the prebuilt binary for your platform, verifies its checksum, and installs to `~/.local/bin`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Haxford/Haxford-agent/main/install.sh | bash
 ```
 
+Re-run it any time to upgrade; it is a no-op when you are already on the latest release. Builds are published for Linux (x64, arm64, glibc and musl) and macOS (Intel and Apple silicon), including `-baseline` variants for x86-64 CPUs without AVX2 — the installer detects which one your machine needs.
+
+| Variable | Effect |
+|---|---|
+| `HAXFORD_VERSION=v0.1.0` | install a specific release instead of the latest |
+| `HAXFORD_INSTALL_DIR=<dir>` | install somewhere other than `~/.local/bin` |
+| `HAXFORD_NO_MODIFY_PATH=1` | never touch your shell rc files |
+| `HAXFORD_FORCE=1` | reinstall even if the current version is already present |
+
 Or build from source — requires [Bun](https://bun.sh) >= 1.2:
 
 ```bash
-git clone <repo> && cd haxford-agent
+git clone https://github.com/Haxford/Haxford-agent.git && cd Haxford-agent
 bun install
 bun run compile          # build the standalone ./haxford binary
 ln -s "$PWD/haxford" ~/.local/bin/haxford   # put it on PATH
 ```
+
+To uninstall, delete the binary: `rm ~/.local/bin/haxford`.
 
 Set a provider key, or reuse one already in opencode's auth store (`~/.local/share/opencode/auth.json` — haxford reads it read-only):
 

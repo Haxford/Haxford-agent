@@ -4,23 +4,38 @@ haxford is a terminal coding agent. It runs in one Bun process: no daemon, no la
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) >= 1.2.
 - An API key for at least one [provider](providers.md). Anthropic, OpenAI, or OpenRouter are the simplest.
 - A terminal that handles ANSI 16-color output. No truecolor required — haxford borrows the terminal's own palette by design.
+- [Bun](https://bun.sh) >= 1.2 — only if you build from source. The prebuilt binary embeds its own runtime.
 
 ## Install
 
 ```bash
-git clone <repo> && cd haxford-agent
-bun install
-bun run compile          # build the standalone ./haxford binary
+curl -fsSL https://raw.githubusercontent.com/Haxford/Haxford-agent/main/install.sh | bash
 ```
 
-Put the binary on your `PATH`:
+That downloads the release binary for your platform, checks it against the release's `checksums.txt`, installs it to `~/.local/bin`, and adds that directory to your `PATH` if it isn't there already. Run the same line again to upgrade — it exits early when you're already current.
+
+Releases carry nine builds: Linux x64 and arm64, each in glibc and musl flavors, plus `-baseline` variants of the x86-64 ones for CPUs without AVX2, and macOS Intel and Apple silicon. The installer picks by probing `uname`, the dynamic loader, and the CPU feature flags, so on Alpine or an older Xeon you get a binary that actually runs rather than a `not found` or a `SIGILL`.
+
+Knobs, all optional:
+
+| Variable | Effect |
+|---|---|
+| `HAXFORD_VERSION=v0.1.0` | install a specific release instead of the latest |
+| `HAXFORD_INSTALL_DIR=<dir>` | install somewhere other than `~/.local/bin` |
+| `HAXFORD_NO_MODIFY_PATH=1` | never touch your shell rc files |
+| `HAXFORD_FORCE=1` | reinstall even if the current version is already present |
+
+The installed version is recorded at `~/.local/share/haxford/version`. To uninstall, `rm ~/.local/bin/haxford`.
+
+### From source
 
 ```bash
-mkdir -p ~/.local/bin
-ln -s "$PWD/haxford" ~/.local/bin/haxford
+git clone https://github.com/Haxford/Haxford-agent.git && cd Haxford-agent
+bun install
+bun run compile          # build the standalone ./haxford binary
+mkdir -p ~/.local/bin && ln -s "$PWD/haxford" ~/.local/bin/haxford
 ```
 
 Or run from source without compiling:
@@ -28,6 +43,8 @@ Or run from source without compiling:
 ```bash
 bun run dev "<prompt>"
 ```
+
+If no release asset matches your platform, the installer falls back to exactly this — but it says so first, and it shows the build output rather than hiding it.
 
 ## Set a key
 

@@ -9,35 +9,65 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: linux-x64
-          - os: macos-latest
-            target: darwin-arm64
-          - os: macos-13
-            target: darwin-x64
-    runs-on: ${{ matrix.os }}
+  release:
+    # Every artifact is cross-compiled from this one runner. Bun's
+    # `--compile --target=` embeds the runtime for the target triple, so a
+    # per-OS matrix bought nothing and cost everything: the darwin-x64 leg sat
+    # on `macos-13`, which GitHub is retiring, and a release could not finish
+    # while that queue was drained.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
-      - run: bun run compile
-      - name: rename artifact
-        run: mv haxford "haxford-${{ matrix.target }}"
+
+      - name: build every target
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build() {
+            echo "::group::$1"
+            bun build --compile --minify --target="bun-$2" --outfile dist/haxford ./src/index.ts
+            # A single-file tarball: ~96 MB of binary compresses to ~36 MB, and
+            # tar+gzip is the one archive pair present on stock macOS and every
+            # Linux base image alike.
+            tar -czf "dist/haxford-$1.tar.gz" -C dist haxford
+            rm dist/haxford
+            echo "::endgroup::"
+          }
+          # `-baseline` variants target x86-64 CPUs without AVX2. Without them
+          # the standard build dies with SIGILL on older hardware and inside
+          # VMs that mask CPU features — install.sh probes and picks.
+          build linux-x64              linux-x64
+          build linux-x64-baseline     linux-x64-baseline
+          build linux-arm64            linux-arm64
+          build linux-x64-musl         linux-x64-musl
+          build linux-x64-musl-baseline linux-x64-musl-baseline
+          build linux-arm64-musl       linux-arm64-musl
+          build darwin-x64             darwin-x64
+          build darwin-x64-baseline    darwin-x64-baseline
+          build darwin-arm64           darwin-arm64
+          ls -la dist
+
+      - name: smoke test the native artifact
+        run: |
+          set -euo pipefail
+          tar -xzf dist/haxford-linux-x64.tar.gz -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/haxford" --help | grep -q "terminal AI agent harness"
+
+      - name: checksums
+        run: cd dist && sha256sum *.tar.gz > checksums.txt && cat checksums.txt
+
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: "haxford-${{ matrix.target }}"
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          fail_on_unmatched_files: true
           generate_release_notes: true
-      - uses: actions/upload-artifact@v4
-        if: github.ref == 'refs/heads/main'
-        with:
-          name: "haxford-${{ matrix.target }}"
-          path: "haxford-${{ matrix.target }}"
