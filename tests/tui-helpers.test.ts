@@ -60,7 +60,7 @@ describe("footer composition", () => {
   })
 
   test("no limit means no ctx figure but the mode stays", () => {
-    expect(footerRight({ mode: "plan", model: "a/b" })).toBe("(plan)")
+    expect(footerRight({ mode: "plan", model: "a/b" })).toBe("(plan) · b")
   })
 
   test("an unpriced session shows no cost segment", () => {
