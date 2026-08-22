@@ -1,7 +1,7 @@
 import { Box, Text } from "ink"
 import React from "react"
 
-import type { Message, Part, ReasoningPart, TextPart, ToolPart } from "../../types/message.ts"
+import type { ImagePart, Message, Part, ReasoningPart, TextPart, ToolPart } from "../../types/message.ts"
 import { railProps, theme } from "../theme.ts"
 import { Spinner } from "./Spinner.tsx"
 
@@ -47,6 +47,7 @@ export function previewLines(text: string, max = MAX_PREVIEW_LINES): string[] {
 export function partIsMultiline(part: Part): boolean {
   if (part.type === "text") return part.text.includes("\n")
   if (part.type === "reasoning") return part.text.includes("\n")
+  if (part.type === "image") return false
   return previewLines(toolOutput(part)).length > 0
 }
 
@@ -156,7 +157,24 @@ function ReasoningBlock({ part }: { part: ReasoningPart }): React.ReactElement {
 function PartView({ part, role }: { part: Part; role: Message["role"] }): React.ReactElement {
   if (part.type === "text") return <TextBlock part={part} role={role} />
   if (part.type === "reasoning") return <ReasoningBlock part={part} />
+  if (part.type === "image") return <ImageChip part={part} />
   return <ToolView part={part} />
+}
+
+/** Inline placeholder for an attached image (terminals can't render pixels). */
+function ImageChip({ part }: { part: ImagePart }): React.ReactElement {
+  const name = part.source?.split("/").pop() ?? "pasted image"
+  const bytes = Math.floor((part.data.length * 3) / 4)
+  const kb = bytes >= 1024 ? `${Math.round(bytes / 1024)} kB` : `${bytes} B`
+  return (
+    <Box>
+      <Text color={theme.accent}>▣ {name}</Text>
+      <Text dimColor>
+        {" "}
+        {part.mime.replace("image/", "")} · {kb}
+      </Text>
+    </Box>
+  )
 }
 
 export function MessageView({ message }: { message: Message }): React.ReactElement {

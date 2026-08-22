@@ -1,8 +1,109 @@
 import path from "node:path"
 import { stat } from "node:fs/promises"
 import { LOCAL_SETTINGS_FILE } from "../permission/engine.ts"
-import type { PermissionRules } from "../types/config.ts"
+import type { TrustConfig } from "../permission/engine.ts"
+import type { PermissionAction, PermissionRules } from "../types/config.ts"
 import type { HaxfordConfig } from "../types/config.ts"
+
+export type { TrustConfig }
+
+/**
+ * The `permission` section as it may be written on disk: per-tool rules, plus
+ * an optional `trust` block scoping what auto mode may do unattended.
+ *
+ * `trust` cannot live in `PermissionRules` itself — that type is frozen in
+ * `src/types/config.ts` and every value in it is a `PermissionAction` or a
+ * pattern record. So it is declared here, parsed out of the raw file by
+ * `readTrust`, and stripped from the rules by `stripTrust` before anything
+ * downstream sees them; `LoadedConfig.trust` carries it instead.
+ */
+export interface PermissionSection {
+  /** Scoped trust for auto mode. Not a tool rule. */
+  trust?: TrustConfig
+  [tool: string]:
+    | PermissionAction
+    | Record<string, PermissionAction>
+    | TrustConfig
+    | undefined
+}
+
+/** `HaxfordConfig` as it appears in a config file, before `trust` is split off. */
+export interface HaxfordConfigFile extends Omit<HaxfordConfig, "permission"> {
+  permission?: PermissionSection
+}
+
+/** The reserved key in `permission` that is a trust block, not a tool. */
+const TRUST_KEY = "trust"
+
+/** Strings from an untrusted config file: anything not a string is dropped. */
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+  return items.length > 0 ? items : undefined
+}
+
+/**
+ * Read `permission.trust` out of one config layer.
+ *
+ * Returns undefined unless the block names at least one path or command:
+ * absent trust means "auto mode is unscoped", and a block that scopes nothing
+ * would silently turn auto mode into build mode.
+ */
+function readTrust(config: Partial<HaxfordConfig>): TrustConfig | undefined {
+  const permission: unknown = config.permission
+  if (typeof permission !== "object" || permission === null) return undefined
+  const block: unknown = (permission as Record<string, unknown>)[TRUST_KEY]
+  if (typeof block !== "object" || block === null || Array.isArray(block)) {
+    return undefined
+  }
+
+  const paths = stringList((block as Record<string, unknown>)["paths"])
+  const commands = stringList((block as Record<string, unknown>)["commands"])
+  if (paths === undefined && commands === undefined) return undefined
+
+  return {
+    ...(paths !== undefined ? { paths } : {}),
+    ...(commands !== undefined ? { commands } : {}),
+  }
+}
+
+/**
+ * Merge two trust blocks. Scopes are additive, because each layer is the same
+ * user widening their own trust — a project saying "also trust `bun test`"
+ * should not silently revoke what the global config already trusted.
+ */
+function mergeTrust(
+  base: TrustConfig | undefined,
+  over: TrustConfig | undefined,
+): TrustConfig | undefined {
+  if (base === undefined) return over
+  if (over === undefined) return base
+  const paths = [...new Set([...(base.paths ?? []), ...(over.paths ?? [])])]
+  const commands = [
+    ...new Set([...(base.commands ?? []), ...(over.commands ?? [])]),
+  ]
+  return {
+    ...(paths.length > 0 ? { paths } : {}),
+    ...(commands.length > 0 ? { commands } : {}),
+  }
+}
+
+/**
+ * The permission rules of one layer with the `trust` block removed, so no
+ * consumer ever sees a "tool" called trust.
+ */
+function stripTrust(
+  config: Partial<HaxfordConfig>,
+): PermissionRules | undefined {
+  const rules = config.permission
+  if (rules === undefined) return undefined
+  if (!(TRUST_KEY in rules)) return rules
+  const { [TRUST_KEY]: _trust, ...rest } = rules
+  return rest
+}
 
 /**
  * Global config: ~/.config/haxford/haxford.json.
@@ -19,6 +120,12 @@ import type { HaxfordConfig } from "../types/config.ts"
  */
 export interface LoadedConfig {
   config: HaxfordConfig
+  /**
+   * The merged `permission.trust` block, split out of `config.permission`
+   * (which is typed as tool rules only). Pass it to `createAskHandler` as
+   * `trust` to scope auto mode; undefined leaves auto mode unscoped.
+   */
+  trust?: TrustConfig
   /** Verbatim contents of AGENTS.md in the project root, if present. */
   projectInstructions?: string
   /**
@@ -187,10 +294,15 @@ export async function loadConfig(cwd: string): Promise<LoadedConfig> {
     ...local,
     providers: { ...global.providers, ...project.providers, ...local.providers },
     permission: mergePermission(
-      mergePermission(global.permission, project.permission),
-      local.permission,
+      mergePermission(stripTrust(global), stripTrust(project)),
+      stripTrust(local),
     ),
   }
+
+  const trust = mergeTrust(
+    mergeTrust(readTrust(global), readTrust(project)),
+    readTrust(local),
+  )
 
   const warnings = await collectWarnings(
     globalPath,
@@ -206,7 +318,12 @@ export async function loadConfig(cwd: string): Promise<LoadedConfig> {
     ? await agentsFile.text()
     : undefined
 
-  return { config, projectInstructions, warnings }
+  return {
+    config,
+    ...(trust !== undefined ? { trust } : {}),
+    ...(projectInstructions !== undefined ? { projectInstructions } : {}),
+    warnings,
+  }
 }
 
 /**

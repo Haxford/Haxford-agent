@@ -24,6 +24,29 @@ import type { TuiStore } from "./store.ts"
 export { HELP_TEXT }
 
 /**
+ * Ink render options the host MUST pass for the two-press ctrl+c flow to work.
+ *
+ * Ink's default `exitOnCtrlC: true` swallows ctrl+c inside its own stdin
+ * handler and never forwards it to `useInput` (see ink's use-input.js: "If app
+ * is supposed to exit on Ctrl+C, skip input listeners"). With the default the
+ * first press hard-unmounts the app, so the confirm-before-quit window below
+ * can never arm. Hosts render with:
+ *
+ *   render(element, INK_RENDER_OPTIONS)
+ */
+export const INK_RENDER_OPTIONS = { exitOnCtrlC: false } as const
+
+/** How long a transient status hint stays on screen (ms). */
+export const HINT_MS = 2000
+
+/**
+ * How long to wait for a resume to land before reporting it as swallowed.
+ * `onResumeSession` is async in every real host (read meta, replay JSONL),
+ * so the check has to be generous enough not to false-positive on disk I/O.
+ */
+export const RESUME_TIMEOUT_MS = 1000
+
+/**
  * Canned instruction sent to the model by /init. Model-visible, so written
  * for the model to act on: analyze the codebase and produce/improve an
  * AGENTS.md covering the conventions a contributor needs. Kept short so it
@@ -138,6 +161,26 @@ export function clampCursor(cursor: number, n: number): number {
   if (cursor < 0) return n - 1
   if (cursor >= n) return 0
   return cursor
+}
+
+/**
+ * Pricing for the active model, looked up in the `models` prop by exact spec.
+ *
+ * Only an exact spec match counts. Prices differ across a provider's lineup and
+ * across providers reselling the same weights, so a fuzzy match would quietly
+ * bill the session at some other model's rate. No match => no pricing => the
+ * status bar shows no cost at all, which is the honest outcome.
+ */
+export function pricingForSpec(
+  models: string[] | ModelOption[],
+  spec: string,
+): { promptPricePerMtok?: number; completionPricePerMtok?: number } {
+  const entry = normalizeModels(models).find((m) => m.spec === spec)
+  if (entry === undefined) return {}
+  return {
+    ...(entry.promptPricePerMtok !== undefined ? { promptPricePerMtok: entry.promptPricePerMtok } : {}),
+    ...(entry.completionPricePerMtok !== undefined ? { completionPricePerMtok: entry.completionPricePerMtok } : {}),
+  }
 }
 
 /** A pending async load: either loading, ready, or errored. */
@@ -256,6 +299,36 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     showConnect: false,
   })
 
+  // A transient one-line status hint rendered just above the composer, then
+  // expired. This is the surface for feedback that is *about the UI* rather
+  // than about the conversation — a mode switch, a ctrl+c confirmation. Such
+  // feedback must never be dispatched as a `notice`: notices live in the
+  // transcript, so they wedge themselves permanently above the next agent
+  // reply and read as something the agent said.
+  const [hint, setHint] = useState<string | undefined>(undefined)
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const showHint = useCallback((message: string, ms: number = HINT_MS) => {
+    if (hintTimer.current !== undefined) clearTimeout(hintTimer.current)
+    setHint(message)
+    hintTimer.current = setTimeout(() => {
+      hintTimer.current = undefined
+      setHint(undefined)
+    }, ms)
+  }, [])
+  const clearHint = useCallback(() => {
+    if (hintTimer.current !== undefined) clearTimeout(hintTimer.current)
+    hintTimer.current = undefined
+    setHint(undefined)
+  }, [])
+  useEffect(() => () => {
+    if (hintTimer.current !== undefined) clearTimeout(hintTimer.current)
+  }, [])
+
+  // Armed by the first ctrl+c on an idle composer; a second press inside the
+  // hint window exits. A ref (not state) so the input handler reads the live
+  // value regardless of render timing.
+  const exitArmed = useRef(false)
+
   // Slash autocomplete: tracks the live composer value, matching commands, and
   // the selected match index. Active only when the value starts with '/'.
   const [composerValue, setComposerValue] = useState("")
@@ -293,9 +366,57 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
 
   const running = state.status === "running"
 
+  /**
+   * The single entry point for a mode switch (/mode and Tab both land here).
+   *
+   * Feedback is a transient hint, never a `notice`. A notice is transcript
+   * content: it survives the switch, sits above whatever the agent says next,
+   * and reads as part of the conversation. Mode is chrome, so it belongs on
+   * the chrome surface and expires on its own.
+   */
+  const changeMode = useCallback(
+    (next: "build" | "auto" | "plan") => {
+      onModeChange(next)
+      showHint(`mode ${next}`)
+    },
+    [onModeChange, showHint],
+  )
+
   // App-level keyboard. Order of precedence: permission dialog (modal) >
   // abort (Esc while running) > overlays > rest.
   useInput((input, key) => {
+    // ctrl+c outranks everything, including the modal permission dialog: it is
+    // the one key that must always mean "get me out of here".
+    //
+    //   running -> interrupt the run (unchanged behaviour, one press)
+    //   idle    -> first press arms + hints, a second inside the window exits
+    //
+    // Requires the host to render with INK_RENDER_OPTIONS; under ink's default
+    // `exitOnCtrlC` this handler is never reached.
+    if (key.ctrl && input === "c") {
+      if (store.getState().status === "running") {
+        onAbort()
+        return
+      }
+      if (exitArmed.current) {
+        exitArmed.current = false
+        clearHint()
+        onExit()
+        return
+      }
+      exitArmed.current = true
+      showHint("press ctrl+c again to exit")
+      // Disarm with the hint so the window and the prompt expire together —
+      // a hint the user can no longer see must not still be live.
+      setTimeout(() => { exitArmed.current = false }, HINT_MS)
+      return
+    }
+    // Any other key cancels a pending exit confirmation: ctrl+c then "y" must
+    // not leave a live quit armed behind an invisible prompt.
+    if (exitArmed.current) {
+      exitArmed.current = false
+      clearHint()
+    }
     // While a permission request is pending, the dialog is modal.
     if (pending !== undefined) {
       if (key.escape) {
@@ -326,9 +447,10 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     // actual mode state and rerenders. Skip when the autocomplete popup is up
     // (the Composer routes tab to the popup instead).
     if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker && !ui.showConnect) {
-      onModeChange(nextMode(mode))
+      changeMode(nextMode(mode))
     }
   })
+
 
   const resetOverlays = useCallback(
     () => setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: false })),
@@ -374,7 +496,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           resetOverlays()
           return
         case "mode":
-          onModeChange(action.mode)
+          // Transient hint only — see changeMode. Nothing reaches the transcript.
+          changeMode(action.mode)
           resetOverlays()
           return
         case "connect":
@@ -388,7 +511,11 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: true }))
           return
         case "notice":
-          store.dispatch({ type: "notice", message: action.message })
+          // The sole producer is an invalid `/mode <arg>`. That is feedback on
+          // a chrome command, so it expires with the other mode hints instead
+          // of parking itself in the transcript. Given twice the usual window:
+          // it names the valid modes, and that is worth reading.
+          showHint(action.message, HINT_MS * 2)
           resetOverlays()
           return
         case "unknown":
@@ -397,7 +524,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           return
       }
     },
-    [mode, onAbort, onCompact, onExit, onModeChange, onNewSession, onPrompt, pending, resetOverlays, state.status, store],
+    [changeMode, mode, onAbort, onCompact, onConnectProvider, onExit, onNewSession, onPrompt, pending, providerCatalog, resetOverlays, showHint, store],
   )
 
   const composerDisabled =
@@ -411,12 +538,34 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     setUi((u) => ({ ...u, showSessions: { kind: "idle" } }))
   }, [])
 
+  /**
+   * Resume a session, and refuse to do it silently.
+   *
+   * Hosts guard `onResumeSession` (haxford's returns early when a run is still
+   * in flight, and again when the session id no longer resolves on disk). Both
+   * guards are `return` with no output, so from the user's seat the picker just
+   * closed and nothing happened — which is what "/sessions is broken" looks
+   * like. A resume that lands always calls `store.reset`, which bumps the
+   * epoch, so an unchanged epoch after the grace period is proof it was
+   * swallowed. Say so rather than leaving the user to guess.
+   */
   const selectSession = useCallback(
     (id: string) => {
       setUi((u) => ({ ...u, showSessions: { kind: "idle" } }))
+      const epochBefore = store.getState().epoch
       onResumeSession(id)
+      setTimeout(() => {
+        if (store.getState().epoch !== epochBefore) return
+        store.dispatch({
+          type: "notice",
+          message:
+            `could not resume ${id.slice(0, 8)} — the host declined it. ` +
+            "A run may still be in flight (press esc to interrupt, then retry), " +
+            "or the session no longer exists on disk.",
+        })
+      }, RESUME_TIMEOUT_MS)
     },
-    [onResumeSession],
+    [onResumeSession, store],
   )
 
   const closeModelPicker = useCallback(() => {
@@ -482,7 +631,12 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
   const composerPlaceholder = composerDisabled
     ? pending !== undefined
       ? "awaiting approval…"
-      : "agent running…"
+      : running
+        ? "agent running…"
+        : // An overlay owns the keyboard, but the agent is idle. Saying
+          // "agent running…" here was a plain lie, and it made a stuck-looking
+          // picker read as a stuck-looking run.
+          "esc to close"
     : mode === "plan"
       ? "plan mode — read-only research; edits require approval"
       : "ask anything, or / for commands"
@@ -495,6 +649,10 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     () => splitTranscript(state.messages),
     [state.messages],
   )
+
+  // Cost inputs for the footer. Recomputed only when the model or the catalog
+  // changes; the token totals it multiplies live in the reducer.
+  const pricing = useMemo(() => pricingForSpec(models, model), [models, model])
 
   // Epoch millis of the current run, for the activity line's clock. Recomputed
   // only on an idle -> running edge.
@@ -562,6 +720,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           <Box marginTop={1}>
             <SessionPicker
               sessions={ui.showSessions.sessions}
+              cwd={cwd}
               onSelect={selectSession}
               onCancel={closeSessions}
             />
@@ -610,7 +769,19 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           </Box>
         ) : null}
 
-        <Box marginTop={running || overlay || live.length > 0 || showBanner ? 1 : 0}>
+        {/*
+          Transient chrome feedback (mode switch, ctrl+c confirmation). It sits
+          exactly where the activity line sits — the one line the eye is already
+          trained on — and expires on its own, so nothing it says ever reaches
+          the transcript.
+        */}
+        {hint !== undefined ? (
+          <Box marginTop={1} paddingLeft={2}>
+            <Text dimColor>{hint}</Text>
+          </Box>
+        ) : null}
+
+        <Box marginTop={hint !== undefined ? 0 : running || overlay || live.length > 0 || showBanner ? 1 : 0}>
           <Composer
             disabled={composerDisabled}
             mode={mode}
@@ -635,6 +806,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           cwd={cwd !== undefined ? shortCwd(cwd) : undefined}
           error={state.error}
           endReason={state.endReason}
+          {...pricing}
         />
       </Box>
     </SpinnerProvider>

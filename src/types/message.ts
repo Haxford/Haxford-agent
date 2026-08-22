@@ -6,6 +6,21 @@ export interface TextPart {
   text: string
 }
 
+/**
+ * Image attached to a user message. `data` is raw base64 (no data: prefix);
+ * `mime` is the image MIME type. Additive contract change (coordinator,
+ * user-approved): older sessions never contain these parts, and consumers
+ * that ignore unknown part kinds keep working unchanged.
+ */
+export interface ImagePart {
+  id: string
+  type: "image"
+  mime: "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+  data: string
+  /** Optional source path when the image came from disk (@file or paste). */
+  source?: string
+}
+
 export interface ReasoningPart {
   id: string
   type: "reasoning"
@@ -38,7 +53,7 @@ export interface ToolPart {
   state: ToolState
 }
 
-export type Part = TextPart | ReasoningPart | ToolPart
+export type Part = TextPart | ImagePart | ReasoningPart | ToolPart
 
 export interface TokenUsage {
   input: number

@@ -6,7 +6,7 @@ import type { AgentEvent } from "../types/events.ts"
 import type { PermissionRequest } from "../types/tool.ts"
 import type { Message } from "../types/message.ts"
 import type { SessionInfo } from "../types/session.ts"
-import { HaxfordApp } from "./app.tsx"
+import { HaxfordApp, INK_RENDER_OPTIONS } from "./app.tsx"
 import { createApprovalBridge, type ApprovalBridge } from "./approval.ts"
 import { createTuiStore, type TuiStore } from "./store.ts"
 
@@ -196,7 +196,10 @@ function main(): void {
   }
   const onModeChange = (m: "build" | "auto" | "plan"): void => {
     currentMode = m
-    store.dispatch({ type: "notice", message: `mode switched to ${m}` })
+    // No notice here, deliberately. A mode switch used to dispatch one, which
+    // parked "mode switched to plan" in the transcript where it sat above the
+    // next agent reply forever. The app now shows a transient hint instead;
+    // the host's only job is to change the mode and rerender.
     rerender(createApp())
   }
   const listSessions = async (): Promise<SessionInfo[]> => {
@@ -235,7 +238,9 @@ function main(): void {
       onResumeSession,
     })
 
-  const { rerender, unmount } = render(createApp())
+  // INK_RENDER_OPTIONS turns off ink's built-in ctrl+c exit so the app's own
+  // two-press confirm can see the key at all.
+  const { rerender, unmount } = render(createApp(), INK_RENDER_OPTIONS)
 
   // Kick off an initial scripted run so the UI shows motion immediately.
   setTimeout(() => {

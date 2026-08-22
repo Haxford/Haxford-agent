@@ -6,6 +6,11 @@ import { railProps, theme } from "../theme.ts"
 
 export interface SessionPickerProps {
   sessions: SessionInfo[]
+  /**
+   * Project directory the list was taken from, named in the empty state.
+   * Optional: hosts that have not wired it still get the generic explanation.
+   */
+  cwd?: string
   onSelect: (id: string) => void
   onCancel: () => void
 }
@@ -24,6 +29,7 @@ function relativeTime(updated: number, now = Date.now()): string {
 
 export function SessionPicker({
   sessions,
+  cwd,
   onSelect,
   onCancel,
 }: SessionPickerProps): React.ReactElement {
@@ -58,7 +64,20 @@ export function SessionPicker({
         </Box>
       </Box>
       {sessions.length === 0 ? (
-        <Text dimColor>{"no sessions found"}</Text>
+        /*
+          Sessions are stored per project directory (base64url of the resolved
+          cwd), so a bare "no sessions found" is indistinguishable from "the
+          feature is broken" when you have simply cd'd somewhere else. Naming
+          the scope turns a dead end into an instruction.
+        */
+        <Box flexDirection="column">
+          <Text dimColor>
+            {cwd === undefined ? "no sessions found here" : `no sessions found in ${cwd}`}
+          </Text>
+          <Text dimColor>
+            {"sessions are scoped to the project directory — run haxford from the directory you used before"}
+          </Text>
+        </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
           {sessions.map((s, i) => {

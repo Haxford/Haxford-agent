@@ -3,8 +3,8 @@ import { createOpenAI } from "@ai-sdk/openai"
 import type { LanguageModel } from "ai"
 import type { HaxfordConfig } from "../types/config.ts"
 import {
+  codexAccessToken,
   opencodeAuthPath,
-  readCodexAuth,
   readOpencodeApiKey,
   tryReadCodexAuth,
 } from "./auth.ts"
@@ -312,7 +312,10 @@ const PROVIDERS: Record<string, ProviderDef> = {
       originator: "haxford",
       "OpenAI-Beta": "responses=experimental",
     },
-    resolveApiKey: () => readCodexAuth().accessToken,
+    // Synchronous (resolveModel cannot await) but self-healing: a stale token
+    // is still returned as-is — so the 401 path is unchanged — while a
+    // background refresh rotates the file for the next turn's resolution.
+    resolveApiKey: () => codexAccessToken(),
     resolveHeaders: () => {
       const auth = tryReadCodexAuth()
       return auth?.accountId

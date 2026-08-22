@@ -464,12 +464,124 @@ export function evaluatePermission(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Scoped trust                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A scope the user has pre-approved, configured as `permission.trust`.
+ *
+ * This narrows auto mode rather than widening build mode: auto normally
+ * allows everything a rule does not deny, which is only reasonable when the
+ * user meant the whole workspace. With a trust block they are saying "these
+ * paths and these commands, unattended — ask me about anything else".
+ *
+ * An empty or absent block is not the same as an empty scope: absent means
+ * "no scoping", and auto mode behaves exactly as it always has.
+ */
+export interface TrustConfig {
+  /** Glob patterns matched against a tool's path subject, as rule keys are. */
+  paths?: string[]
+  /** Command prefixes; `git status` trusts `git status --short`. */
+  commands?: string[]
+}
+
+/** Whether a trust block actually scopes anything. */
+export function hasTrustScope(trust: TrustConfig | undefined): boolean {
+  if (trust === undefined) return false
+  return (trust.paths?.length ?? 0) > 0 || (trust.commands?.length ?? 0) > 0
+}
+
+/**
+ * The forms of a path subject a trust glob may be written against: as it
+ * arrives, and relative to the project root when it sits inside it. So
+ * `src/**` covers `/home/u/proj/src/a.ts` for a session rooted at
+ * `/home/u/proj`, without the user having to write absolute patterns.
+ */
+function pathCandidates(subject: string, cwd: string | undefined): string[] {
+  const candidates = [subject]
+  if (cwd !== undefined && cwd !== "") {
+    const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`
+    if (subject.startsWith(prefix)) candidates.push(subject.slice(prefix.length))
+    else if (!subject.startsWith("/")) candidates.push(join(cwd, subject))
+  }
+  return candidates
+}
+
+/** Whether a path subject falls inside one of the trusted path globs. */
+function pathTrusted(
+  patterns: string[],
+  subject: string,
+  cwd: string | undefined,
+): boolean {
+  if (subject === "") return false
+  const candidates = pathCandidates(subject, cwd)
+  return patterns.some((raw) => {
+    const pattern = raw.trim()
+    if (pattern === "") return false
+    // A directory written without a wildcard trusts everything beneath it.
+    const expanded = pattern.endsWith("/") ? `${pattern}**` : pattern
+    return candidates.some((candidate) => matches(expanded, candidate, false))
+  })
+}
+
+/**
+ * Whether one shell command is covered by a trusted prefix.
+ *
+ * A prefix has to end on a word boundary: `git` trusts `git status` but not
+ * `gitleaks`. A prefix containing a wildcard is handed to the same glob
+ * matcher the rules use, so `npm run test:*` means what it looks like.
+ */
+function commandTrusted(prefixes: string[], command: string): boolean {
+  const target = stripWrappers(command).trim()
+  if (target === "") return false
+  return prefixes.some((raw) => {
+    const prefix = raw.trim()
+    if (prefix === "") return false
+    if (prefix.includes("*")) return matches(prefix, target, true)
+    return target === prefix || target.startsWith(`${prefix} `)
+  })
+}
+
+/**
+ * Whether a tool action falls inside the trusted scope.
+ *
+ * A bash subject is decomposed exactly as rule evaluation decomposes it, and
+ * *every* command in the chain has to be trusted — `git status && rm -rf /`
+ * is not vouched for by trusting `git status`.
+ */
+export function isTrustedAction(
+  trust: TrustConfig | undefined,
+  tool: string,
+  subject: string,
+  cwd?: string,
+): boolean {
+  if (!hasTrustScope(trust) || trust === undefined) return false
+
+  if (tool === "bash") {
+    const prefixes = trust.commands ?? []
+    if (prefixes.length === 0) return false
+    const parts = splitCommand(subject)
+    return (
+      parts.length > 0 && parts.every((part) => commandTrusted(prefixes, part))
+    )
+  }
+
+  return pathTrusted(trust.paths ?? [], subject, cwd)
+}
+
+/* -------------------------------------------------------------------------- */
 /* Ask handler                                                                 */
 /* -------------------------------------------------------------------------- */
 
 export interface AskHandlerOptions {
   rules?: PermissionRules
   mode: Mode
+  /**
+   * Scoped trust for auto mode (`permission.trust` in config). When present,
+   * auto mode allows only what the scope covers and asks about the rest.
+   * Omit for unscoped auto mode, which allows everything a rule does not deny.
+   */
+  trust?: TrustConfig
   /**
    * Called only when evaluation lands on ask (build mode). May be sync or
    * async; the result is awaited either way.
@@ -644,7 +756,15 @@ export function createAskHandler(
     // An explicit deny is final in every mode.
     if (action === "deny") return "deny"
 
-    if (opts.mode === "auto") return "allow"
+    if (opts.mode === "auto") {
+      // Unscoped auto is the blanket allow it has always been. A trust block
+      // turns that into "allow inside the scope"; everything outside it drops
+      // through to the same evaluate-then-ask path build mode takes, so an
+      // explicit `allow` rule and the read-only tool defaults still stand
+      // while an unlisted edit or command prompts.
+      if (!hasTrustScope(opts.trust)) return "allow"
+      if (isTrustedAction(opts.trust, tool, subject, opts.cwd)) return "allow"
+    }
 
     if (opts.mode === "plan") {
       if (MUTATING.has(tool)) return "deny"

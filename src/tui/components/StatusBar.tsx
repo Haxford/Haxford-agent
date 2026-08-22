@@ -21,6 +21,10 @@ export interface StatusBarProps {
   error?: string
   /** Reason from the last loop.end; shown in a warning color when not end_turn. */
   endReason?: string
+  /** USD per million prompt tokens for the active model. Omitted => no cost shown. */
+  promptPricePerMtok?: number
+  /** USD per million completion tokens for the active model. */
+  completionPricePerMtok?: number
 }
 
 /**
@@ -80,6 +84,36 @@ export function contextPercent(
 }
 
 /**
+ * Session spend in USD from the accumulated token totals.
+ *
+ * Returns undefined when there is nothing honest to show: no pricing at all
+ * for this model (the catalog does not carry it, or the model is local), or a
+ * session that has not spent anything yet. A "$0.0000" that only means "we do
+ * not know" is worse than no number, so a missing price is not treated as
+ * free — a model priced on one side only still bills the other, and that half
+ * is reported rather than dropped.
+ *
+ * Reasoning tokens are deliberately excluded: providers bill them inside the
+ * completion count already, so adding them would double-charge.
+ */
+export function sessionCost(
+  usage: TotalUsage,
+  promptPricePerMtok?: number,
+  completionPricePerMtok?: number,
+): number | undefined {
+  if (promptPricePerMtok === undefined && completionPricePerMtok === undefined) return undefined
+  const cost =
+    (usage.input * (promptPricePerMtok ?? 0) + usage.output * (completionPricePerMtok ?? 0)) / 1e6
+  if (!Number.isFinite(cost) || cost <= 0) return undefined
+  return cost
+}
+
+/** Render a cost as a fixed 4-decimal dollar figure: 0.01234 -> "$0.0123". */
+export function formatCost(cost: number): string {
+  return `$${cost.toFixed(4)}`
+}
+
+/**
  * The persistent footer, rendered *below* the composer — the position every
  * reference harness uses.
  *
@@ -96,11 +130,14 @@ export function StatusBar({
   cwd,
   error,
   endReason,
+  promptPricePerMtok,
+  completionPricePerMtok,
 }: StatusBarProps): React.ReactElement {
   const s = statusLabel(status)
   const badge = modeBadge(mode)
   const r = endReason !== undefined ? reasonLabel(endReason) : undefined
   const pct = contextPercent(usage, contextLimit)
+  const cost = sessionCost(usage, promptPricePerMtok, completionPricePerMtok)
 
   return (
     <Box flexDirection="column">
@@ -112,6 +149,7 @@ export function StatusBar({
         <Box flexGrow={1} justifyContent="flex-end" gap={1}>
           {r !== undefined ? <Text color={r.color}>{r.text}</Text> : null}
           {cwd !== undefined ? <Text dimColor>{cwd}</Text> : null}
+          {cost !== undefined ? <Text dimColor>{formatCost(cost)}</Text> : null}
           {pct !== undefined ? <Text dimColor>ctx {pct}%</Text> : null}
         </Box>
       </Box>

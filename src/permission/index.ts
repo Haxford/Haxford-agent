@@ -1,8 +1,10 @@
 export {
   createAskHandler,
   evaluatePermission,
+  hasTrustScope,
   isReadOnlyChain,
   isReadOnlyCommand,
+  isTrustedAction,
   persistAlwaysRule,
   splitCommand,
   stripWrappers,
@@ -10,4 +12,5 @@ export {
   LOCAL_SETTINGS_FILE,
   type AskHandlerOptions,
   type Mode,
+  type TrustConfig,
 } from "./engine.ts"
