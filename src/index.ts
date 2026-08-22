@@ -175,12 +175,14 @@ async function runTui(
   args: CliArgs,
   config: HaxfordConfig,
   projectInstructions: string | undefined,
+  warnings: string[],
 ): Promise<void> {
   let { session, history } = await openSession(cwd, args)
   let model = args.model ?? config.model ?? defaultModelSpec()
 
   const bridge = createApprovalBridge()
   const store = createTuiStore(history)
+  for (const w of warnings) store.dispatch({ type: "notice", message: w })
   let mode: Mode = args.mode
 
   // Built per prompt so a /mode switch applies from the next turn on.
@@ -365,7 +367,9 @@ async function main(): Promise<void> {
   }
 
   const cwd = process.cwd()
-  const { config, projectInstructions } = await loadConfig(cwd)
+  const { config, projectInstructions, warnings } = await loadConfig(cwd)
+
+  for (const w of warnings) process.stderr.write(`[security] ${w}\n`)
 
   if (args.print) {
     if (!args.prompt) {
@@ -379,7 +383,7 @@ async function main(): Promise<void> {
     process.stderr.write("interactive mode requires a TTY; use -p for print mode\n")
     process.exit(2)
   }
-  await runTui(cwd, args, config, projectInstructions)
+  await runTui(cwd, args, config, projectInstructions, warnings)
 }
 
 main().catch((error) => {

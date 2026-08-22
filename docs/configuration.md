@@ -1,0 +1,90 @@
+# Configuration
+
+haxford loads JSON config from three layers and deep-merges them. Later layers win on scalar conflicts; `permission` rules merge per-pattern; `providers` merge per-provider object.
+
+## Config files
+
+| Layer | Path | Notes |
+|---|---|---|
+| Global | `~/.config/haxford/haxford.json` (or `$XDG_CONFIG_HOME/haxford/haxford.json`) | User-wide defaults. |
+| Project | `./haxford.json` | Project-specific; safe to commit. |
+| Project-local | `./.haxford/settings.local.json` | Written by the permission engine on `always` answers. Machine-local — do **not** commit. |
+
+An `AGENTS.md` in the project root is read verbatim and appended to the system prompt as project instructions.
+
+## Merge rules
+
+- **Scalars** (`model`, `maxTurns`, `autoCompactAt`): later layer wins outright.
+- **`providers`**: merged per-provider — `providers.openrouter` from global is not replaced by a project entry that only sets `providers.anthropic`; each provider's `{apiKey, baseURL, models}` merges field by field.
+- **`permission`**: merged per-pattern — a local file that names a single `bash` pattern does not replace every `bash` rule from a lower layer. Two pattern records merge pattern by pattern; a bare action (`"bash": "deny"`) replaces the whole entry for that tool.
+
+## Full schema
+
+```json
+{
+  "model": "anthropic/claude-sonnet-5",
+  "providers": {
+    "openrouter": {
+      "apiKey": "sk-or-...",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "models": ["anthropic/claude-sonnet-5", "openai/gpt-5.2"]
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "write": "ask",
+    "edit": "ask",
+    "bash": {
+      "git status": "allow",
+      "git diff *": "allow",
+      "rm *": "deny",
+      "*": "ask"
+    }
+  },
+  "maxTurns": 100,
+  "autoCompactAt": 0.9
+}
+```
+
+### Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `model` | string | `anthropic/claude-sonnet-5` | `"provider/model"` spec. Overridden by `-m`/`--model` or `HAXFORD_MODEL`. |
+| `providers` | object | — | Per-provider overrides. See below. |
+| `permission` | object | — | [Permission rules](permissions.md#rules). |
+| `maxTurns` | number | `100` | Max loop turns per prompt before the run stops with reason `max_turns`. |
+| `autoCompactAt` | number | `0.9` | Auto-compact when context usage exceeds this fraction (0–1). See [Sessions → compaction](sessions.md#compaction). |
+
+### `providers` entries
+
+| Field | Description |
+|---|---|
+| `apiKey` | API key for this provider. Overrides the env var and opencode-store fallback. |
+| `baseURL` | Custom endpoint — for proxies, gateways, or self-hosted OpenAI-compatible servers. |
+| `models` | Model ids to add to the `/model` picker under this provider. Combined with the built-in `knownModels`. |
+
+Custom providers (any name not in the built-in eight) are spoken to as OpenAI chat completions. There is no per-provider protocol override today.
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `HAXFORD_MODEL` | Override the default model spec. Lowest priority of the model overrides (`-m`/config win). |
+| `HAXFORD_DATA_DIR` | Override the sessions data root. See [Sessions](sessions.md#storage-layout). |
+| `OPENCODE_AUTH_PATH` | Override the opencode auth store path (defaults to `~/.local/share/opencode/auth.json`). |
+| `CODEX_HOME` | Override the codex auth file location (defaults to `~/.codex`). |
+
+Provider env keys (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, etc.) are listed in [Providers](providers.md).
+
+## Security
+
+Prefer the environment or opencode's auth store for API keys. A `providers.<name>.apiKey` in `haxford.json` ships the secret into the repo if committed. If you must use a config key, add `haxford.json` to `.gitignore` — or better, keep keys out of project config entirely and let the env-var / opencode-store fallback handle them.
+
+`.haxford/settings.local.json` is written by the permission engine on `always` answers. It holds only approvals, but it is machine-local and should never be committed. It is **not** in `.gitignore` by default — add it yourself, or treat its contents as untrusted when reading config.
+
+## Next
+
+- [Providers](providers.md) — the auth precedence and per-provider keys.
+- [Permissions](permissions.md) — the `permission` block in detail.
+- [Sessions](sessions.md) — `HAXFORD_DATA_DIR` and the storage layout.

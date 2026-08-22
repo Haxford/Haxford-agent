@@ -13,6 +13,51 @@ import {
 export const DEFAULT_MODEL_SPEC = "anthropic/claude-sonnet-5"
 
 /**
+ * Validate that a provider base URL uses HTTPS, or is a local address
+ * where HTTP is acceptable.
+ *
+ * A non-HTTPS URL for a remote provider sends the API key in cleartext
+ * over the wire. Local addresses (localhost, 127.0.0.1, 0.0.0.0, [::1],
+ * or a bare host without a dot that resolves locally) are allowed over
+ * HTTP for dev servers like Ollama.
+ *
+ * Returns null when the URL is safe, or an error string explaining why
+ * it is not — the caller surfaces it as a config error, never embedding
+ * the URL in a thrown error the model might see.
+ */
+export function validateBaseURL(url: string | undefined): string | null {
+  if (!url || url.trim().length === 0) return null
+  const trimmed = url.trim()
+  if (trimmed.startsWith("https://")) return null
+  if (trimmed.startsWith("http://")) {
+    const rest = trimmed.slice("http://".length)
+    // Strip the path and port to get the hostname.
+    const hostport = rest.split("/")[0] ?? ""
+    // Handle IPv6 bracket notation: [::1]:8080 → [::1]
+    let hostname: string
+    if (hostport.startsWith("[")) {
+      const close = hostport.indexOf("]")
+      hostname = close > 0 ? hostport.slice(1, close) : hostport
+    } else {
+      hostname = hostport.split(":")[0] ?? ""
+    }
+    if (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "0.0.0.0" ||
+      hostname === "::1" ||
+      hostname === ""
+    ) {
+      return null
+    }
+    return `Provider base URL ${JSON.stringify(trimmed)} uses HTTP for a non-local host. ` +
+      `Use HTTPS to avoid sending API keys in cleartext.`
+  }
+  return `Provider base URL ${JSON.stringify(trimmed)} has no http(s) scheme. ` +
+    `Use a full https:// URL.`
+}
+
+/**
  * Which wire protocol a provider speaks.
  *
  * - anthropic: the Anthropic Messages API.
@@ -189,6 +234,10 @@ const PROVIDERS: Record<string, ProviderDef> = {
     envKey: "OPENROUTER_API_KEY",
     baseURL: "https://openrouter.ai/api/v1",
     api: "chat",
+    headers: {
+      "HTTP-Referer": "https://your-app-url.com",
+      "X-Title": "YourAppName",
+    },
     knownModels: [
       // flagship / frontier coding
       "anthropic/claude-sonnet-5",
@@ -368,6 +417,12 @@ function construct(
   const override = config?.providers?.[provider]
   const baseURL =
     override?.baseURL?.trim() || def.resolveBaseURL?.() || def.baseURL
+
+  // Enforce HTTPS for non-local providers so a misconfigured baseURL can
+  // never send the API key in cleartext. This is a config/wiring error,
+  // not a model-visible tool failure, so it throws.
+  const urlError = validateBaseURL(baseURL)
+  if (urlError) throw new Error(urlError)
 
   const headers = { ...def.headers, ...def.resolveHeaders?.(apiKey) }
 

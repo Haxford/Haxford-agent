@@ -2,6 +2,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
+import { filteredEnv, redactSecrets } from "../config/secrets.ts"
 import { errorText, truncateTail } from "./shared.ts"
 
 const DEFAULT_TIMEOUT = 120_000
@@ -105,7 +106,11 @@ Usage:
   Each part of a chained command is approved separately, so a rule covering
   the first part does not cover what follows it.
 - Never run commands that are destructive or far-reaching without being asked
-  to, and do not use this tool to work around a declined action.`,
+  to, and do not use this tool to work around a declined action.
+- Haxford's own provider API keys are stripped from the child process
+  environment so they cannot be echoed or exfiltrated. User-defined tokens
+  (NPM_TOKEN, GH_TOKEN, …) are passed through. Any credential patterns that
+  appear in captured output are redacted before the result reaches you.`,
   parameters,
   async execute(args, ctx): Promise<ToolResult> {
     const command = args.command.trim()
@@ -138,6 +143,7 @@ Usage:
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
+        env: filteredEnv(),
       })
 
       const kill = () => {
@@ -171,7 +177,11 @@ Usage:
       // A trailing newline ends the last line rather than opening a new one,
       // so stripping trailing newlines keeps line counts honest while giving
       // the model clean output instead of a dangling blank line.
-      const combined = chunks.join("").replace(/[\r\n]+$/, "")
+      const raw = chunks.join("").replace(/[\r\n]+$/, "")
+      // Redact any credential values that slipped into the output before
+      // truncation, spill, or model-visible text — defense-in-depth even
+      // though filteredEnv already strips haxford's own key vars.
+      const combined = redactSecrets(raw)
       const tail = truncateTail(combined, {
         maxChars: MAX_OUTPUT_CHARS,
         maxLines: MAX_OUTPUT_LINES,
