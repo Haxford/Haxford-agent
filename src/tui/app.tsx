@@ -44,7 +44,7 @@ export const HINT_MS = 2000
  * `onResumeSession` is async in every real host (read meta, replay JSONL),
  * so the check has to be generous enough not to false-positive on disk I/O.
  */
-export const RESUME_TIMEOUT_MS = 1000
+export const RESUME_TIMEOUT_MS = 1500
 
 /**
  * Canned instruction sent to the model by /init. Model-visible, so written
@@ -222,6 +222,17 @@ export interface HaxfordAppProps {
    */
   onConnectProvider?: (provider: string, apiKey: string, baseURL?: string) => void
   /**
+   * Verifies a provider key with a live authenticated request before the
+   * dialog accepts it. Optional so unwired hosts keep /connect harmless: the
+   * dialog saves without verifying. Returns ok or an error string the dialog
+   * surfaces inline, letting the user re-edit.
+   */
+  verifyProviderKey?: (
+    provider: string,
+    apiKey: string,
+    baseURL?: string,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>
+  /**
    * Called when the user selects the "+ connect a provider…" row in the
    * /model picker's level-1. Alias for opening the connect flow; the host
    * owns what actually happens (usually: open the same /connect dialog).
@@ -281,6 +292,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     onAbort,
     onModelChange,
     onConnectProvider,
+    verifyProviderKey,
     onProviderConnect,
     onCompact,
     onModeChange,
@@ -650,6 +662,12 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     [state.messages],
   )
 
+  // The app's own transient hint wins over a host-set one (`TuiState.hint`):
+  // the local one is always the more recent thing the user did. Falling back
+  // to the store's keeps both producers on a single line instead of two
+  // competing hint rows.
+  const activeHint = hint ?? state.hint
+
   // Cost inputs for the footer. Recomputed only when the model or the catalog
   // changes; the token totals it multiplies live in the reducer.
   const pricing = useMemo(() => pricingForSpec(models, model), [models, model])
@@ -775,13 +793,13 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           trained on — and expires on its own, so nothing it says ever reaches
           the transcript.
         */}
-        {hint !== undefined ? (
+        {activeHint !== undefined ? (
           <Box marginTop={1} paddingLeft={2}>
-            <Text dimColor>{hint}</Text>
+            <Text dimColor>{activeHint}</Text>
           </Box>
         ) : null}
 
-        <Box marginTop={hint !== undefined ? 0 : running || overlay || live.length > 0 || showBanner ? 1 : 0}>
+        <Box marginTop={activeHint !== undefined ? 0 : running || overlay || live.length > 0 || showBanner ? 1 : 0}>
           <Composer
             disabled={composerDisabled}
             mode={mode}

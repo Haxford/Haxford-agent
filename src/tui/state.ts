@@ -28,6 +28,13 @@ export interface TuiState {
   /** Informational system notes (newest last), capped at 50. */
   notices: string[]
   /**
+   * Transient status hint (e.g. "anthropic connected"), shown briefly then
+   * auto-cleared by the store. NOT a transcript notice: it carries no
+   * durable meaning and never enters the message history. Set via
+   * `store.setHint()`, not through an AgentEvent (the contract is frozen).
+   */
+  hint?: string
+  /**
    * Session generation. Bumped by the store on every `reset()` (i.e. /clear or
    * a resume). The transcript keys its `<Static>` region on this so Ink
    * remounts it instead of re-printing a shrunk item list — see
@@ -43,6 +50,7 @@ export const initialTuiState: TuiState = {
   usage: { input: 0, output: 0, reasoning: 0 },
   notices: [],
   epoch: 0,
+  hint: undefined,
 }
 
 /** Maximum number of notices retained in state. */

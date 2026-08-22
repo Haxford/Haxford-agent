@@ -1,7 +1,8 @@
 import { Box, Text, useInput } from "ink"
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 
 import type { ProviderCatalogEntry } from "./ModelPicker.tsx"
+import { Spinner } from "./Spinner.tsx"
 import { railProps, theme } from "../theme.ts"
 
 /**
@@ -19,6 +20,9 @@ const DEFAULT_BASE_URL: Record<string, string> = {
   codex: "https://chatgpt.com/backend-api/codex",
 }
 
+/** The result of a host-side key check, surfaced inline on failure. */
+export type VerifyResult = { ok: true } | { ok: false; error: string }
+
 /**
  * Mask a key for display: show asterisks. The real value lives in state only;
  * the render never echoes the secret. An empty key shows the placeholder.
@@ -33,23 +37,37 @@ type Field = "key" | "baseURL"
 export interface ConnectDialogProps {
   /** Known providers with their current connection status. */
   providerCatalog: ProviderCatalogEntry[]
-  /** Called when the user saves the form. Persistence is the host's job. */
+  /** Called when the key is accepted (after verification, when configured). */
   onConnect: (provider: string, apiKey: string, baseURL?: string) => void
   /** Esc at the provider chooser, or the form's cancel, closes the dialog. */
   onCancel: () => void
+  /**
+   * Optional: verify the key with a live authenticated request before
+   * accepting it. When provided, submitting the form enters a "verifying"
+   * state; on failure the error is shown inline and the user can re-edit.
+   * When omitted, the dialog saves without verifying (for unwired hosts/tests).
+   */
+  verifyProviderKey?: (
+    provider: string,
+    apiKey: string,
+    baseURL?: string,
+  ) => Promise<VerifyResult>
 }
 
 /**
- * /connect flow. Two stages: a provider chooser (stage "provider") and a
- * small form with a masked key input and an editable base URL (stage "form").
+ * /connect flow. Stages: a provider chooser ("provider"), a small form with a
+ * masked key input and an editable base URL ("form"), and a transient
+ * "verifying" state while a host-side key check runs.
  *
  * The component renders UI only; it calls `onConnect` with the entered values
- * and closes. The host owns persistence, rerender, and the notice event.
+ * once the key is accepted (verified, when a verifier is configured) and
+ * closes. The host owns persistence, rerender, and the confirmation hint.
  */
 export function ConnectDialog({
   providerCatalog,
   onConnect,
   onCancel,
+  verifyProviderKey,
 }: ConnectDialogProps): React.ReactElement {
   const [stage, setStage] = useState<"provider" | "form">("provider")
   const [provider, setProvider] = useState<string>("")
@@ -57,6 +75,12 @@ export function ConnectDialog({
   const [baseURL, setBaseURL] = useState<string>("")
   const [field, setField] = useState<Field>("key")
   const [cursor, setCursor] = useState(0)
+  // While a verification request is in flight the form is replaced by a
+  // "verifying…" state and all input is ignored until it resolves.
+  const [verifying, setVerifying] = useState(false)
+  // A non-empty error string surfaces a failed verification inline, under the
+  // form fields, so the user can read why and re-edit without restarting.
+  const [error, setError] = useState<string | undefined>(undefined)
 
   // Unconnected providers first (the common case: adding a new provider),
   // then connected ones; alphabetical within each tier.
@@ -76,13 +100,46 @@ export function ConnectDialog({
     }
   }, [stage, provider, baseURL])
 
+  /** Accept the form: verify (if configured) then onConnect, or save directly. */
+  const accept = useCallback(() => {
+    if (apiKey.trim().length === 0) return
+    const url = baseURL.trim().length > 0 ? baseURL.trim() : undefined
+    const key = apiKey.trim()
+
+    if (verifyProviderKey === undefined) {
+      onConnect(provider, key, url)
+      return
+    }
+    setVerifying(true)
+    setError(undefined)
+    void verifyProviderKey(provider, key, url)
+      .then((result: VerifyResult) => {
+        if (result.ok) {
+          onConnect(provider, key, url)
+          return
+        }
+        // Stay in the form so the user can fix the key and retry.
+        setVerifying(false)
+        setError(result.error)
+      })
+      .catch((err: unknown) => {
+        setVerifying(false)
+        setError(err instanceof Error ? err.message : String(err))
+      })
+  }, [apiKey, baseURL, onConnect, provider, verifyProviderKey])
+
   useInput((input, key) => {
+    // While verifying, the request owns the turn; ignore all keys until it
+    // resolves (it has its own 10s timeout, so this never blocks indefinitely).
+    if (verifying) return
+
     if (key.escape) {
       if (stage === "form") {
         setStage("provider")
         setApiKey("")
         setBaseURL("")
         setField("key")
+        setError(undefined)
       } else {
         onCancel()
       }
@@ -101,6 +158,7 @@ export function ConnectDialog({
           setProvider(row.name)
           setStage("form")
           setField("key")
+          setError(undefined)
         }
       }
       return
@@ -112,22 +170,20 @@ export function ConnectDialog({
       return
     }
     if (key.return) {
-      if (apiKey.trim().length > 0) {
-        const url = baseURL.trim().length > 0 ? baseURL.trim() : undefined
-        onConnect(provider, apiKey.trim(), url)
-      }
+      accept()
       return
     }
     if (key.backspace || key.delete) {
+      setError(undefined)
       if (field === "key") setApiKey((k) => k.slice(0, -1))
       else setBaseURL((b) => b.slice(0, -1))
       return
     }
-    // Printable characters build the active field. Accept multi-char input
-    // (paste events deliver several chars at once); filter to printable ASCII.
+    // Any printable input clears a prior error — the user is editing.
     if (input && !key.ctrl && !key.meta && !key.tab && input.length > 0) {
       const printable = input.replace(/[^\x20-\x7e]/g, "")
       if (printable.length === 0) return
+      if (error !== undefined) setError(undefined)
       if (field === "key") setApiKey((k) => k + printable)
       else setBaseURL((b) => b + printable)
     }
@@ -172,12 +228,28 @@ export function ConnectDialog({
     )
   }
 
+  // --- verifying stage ---
+  if (verifying) {
+    return (
+      <Box flexDirection="column" {...railProps(theme.accent, false)} paddingLeft={1}>
+        <Box gap={1}>
+          <Spinner />
+          <Text bold color={theme.accent}>{`verifying ${provider}…`}</Text>
+          <Box flexGrow={1} justifyContent="flex-end">
+            <Text dimColor>{"checking the key"}</Text>
+          </Box>
+        </Box>
+        <Text dimColor>{"a live request confirms the key before saving"}</Text>
+      </Box>
+    )
+  }
+
   // --- form stage ---
   const keyDisplay = maskKey(apiKey)
   const keyPlaceholder = "paste your API key"
   const urlPlaceholder = "default endpoint (optional)"
   return (
-    <Box flexDirection="column" {...railProps()} paddingLeft={1}>
+    <Box flexDirection="column" {...railProps(error !== undefined ? theme.warning : undefined, false)} paddingLeft={1}>
       <Box>
         <Text bold>{`connect ${provider}`}</Text>
         <Box flexGrow={1} justifyContent="flex-end">
@@ -198,6 +270,11 @@ export function ConnectDialog({
           </Text>
         </Box>
       </Box>
+      {error !== undefined ? (
+        <Box marginTop={1}>
+          <Text color={theme.error}>{`✗ ${error}`}</Text>
+        </Box>
+      ) : null}
       <Text dimColor>{"tab next field · enter save · esc back"}</Text>
     </Box>
   )

@@ -26,7 +26,7 @@ export const HINTS: ReadonlyArray<readonly [key: string, verb: string]> = [
   ["esc", "interrupt"],
   ["up/dn", "history"],
   ["enter", "send"],
-  ["ctrl+c", "quit"],
+  ["ctrl+c ×2", "quit"],
 ]
 
 /** Number of hint cells per row. */

@@ -16,7 +16,7 @@ import { contextLimit } from "./agent/context.ts"
 import { loadConfig, saveGlobalProviderCredential } from "./config/index.ts"
 import { loadProjectModel, saveProjectModel } from "./config/state.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
-import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels } from "./providers/index.ts"
+import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels, refreshOpenRouterCatalog, verifyProviderKey } from "./providers/index.ts"
 import {
   appendMessage,
   createSession,
@@ -283,8 +283,8 @@ async function runTui(
   // enriched + extended by the live OpenRouter catalog (label/ctx/pricing).
   // Offline or unauthenticated, the picker degrades to the curated list.
   const curated = listKnownModels(config)
-  const catalog = await fetchOpenRouterCatalog()
-  const bySpec = new Map(catalog.map((c) => [c.spec, c]))
+  let catalog = await fetchOpenRouterCatalog()
+  let bySpec = new Map(catalog.map((c) => [c.spec, c]))
   const openrouterReady = curated.some(
     (m) => m.available && m.spec.startsWith("openrouter/"),
   )
@@ -296,7 +296,7 @@ async function runTui(
     ...new Set([...curated, ...catalog].map((m) => m.spec.slice(0, m.spec.indexOf("/")))),
   ].sort()
   const curatedSpecs = new Set([model, ...curated.map((m) => m.spec)])
-  const knownModelMaterials = {
+  let knownModelMaterials = {
     curated,
     bySpec,
     openrouterReady: curated.some((m) => m.available && m.spec.startsWith("openrouter/")),
@@ -364,7 +364,23 @@ async function runTui(
             if (!config.providers) config.providers = {}
             config.providers[provider] = { apiKey, ...(baseURL ? { baseURL } : {}) }
             runtimeConnected.add(provider)
-            store.dispatch({ type: "notice", message: `connected ${provider}` })
+            // A freshly-authed OpenRouter key unlocks its live catalog: bypass
+            // the cache and re-fetch so the picker shows the new models on the
+            // next rerender. Other providers only flip availability, which the
+            // runtimeConnected set already covers.
+            if (provider === "openrouter") {
+              catalog = await refreshOpenRouterCatalog()
+              bySpec = new Map(catalog.map((c) => [c.spec, c]))
+              knownModelMaterials = {
+                curated,
+                bySpec,
+                openrouterReady: true,
+                curatedSpecs,
+              }
+            }
+            // Transient status hint, NOT a transcript notice — same role mode
+            // switches play via the persistent status bar, but time-boxed (2s).
+            store.setHint(`${provider} connected`)
             app.rerender(buildElement())
           } catch (error) {
             store.dispatch({
@@ -374,6 +390,8 @@ async function runTui(
           }
         })()
       },
+      verifyProviderKey: (provider, apiKey, baseURL) =>
+        verifyProviderKey(provider, apiKey, baseURL),
       onModeChange: (m) => {
         mode = m
         app.rerender(buildElement())

@@ -54,4 +54,4 @@ haxford -p "list the tsconfig settings"   # non-interactive, streams to stdout
 
 ## Status & limits
 
-Single-process by design — no MCP server or plugin runtime yet. Image input is not supported; only text parts are sent to the model. Codex (ChatGPT login) token refresh is manual: when the stored `access_token` in `~/.codex/auth.json` expires the provider returns 401 and you must re-run `codex login`. There is no built-in sandboxing; haxford runs with the permissions of the user and process that launched it.
+Single-process by design — no MCP server or plugin runtime yet. Image input is not supported; only text parts are sent to the model. There is no built-in sandboxing; haxford runs with the permissions of the user and process that launched it.

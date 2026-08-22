@@ -40,7 +40,11 @@ Availability is **probed live** (a `GET /api/tags` with a 1.5s timeout, cached 3
 
 The `codex` provider reuses a ChatGPT login performed by the `codex` CLI. haxford reads `$CODEX_HOME/auth.json`, falling back to `~/.codex/auth.json`. It extracts `tokens.access_token` and `tokens.account_id` and sends them as a bearer token plus a `chatgpt-account-id` header.
 
-**Token refresh is manual.** haxford does not perform the OAuth refresh exchange. When the stored `access_token` expires, the provider returns 401 and you must re-run `codex login` to refresh it. This is a known limitation, not a bug.
+**Token refresh is automatic.** When the stored `access_token` is expired (or within 60s of it) and `tokens.refresh_token` is present, haxford performs the OAuth refresh exchange and merge-writes the result back into `auth.json` — preserving fields it does not model, and `chmod 600` on the file. Expiry is read from `tokens.expires_at` if present, otherwise from the access token's own JWT `exp` claim; a token with no discoverable expiry is never refreshed. Concurrent refreshes of the same file share one exchange.
+
+A refresh that fails changes nothing: the stored token is used as-is, the provider returns 401 as before, and `codex login` still fixes it. `resolveModel` is synchronous, so it returns the stored token immediately and refreshes in the background — the *next* turn's resolution picks up the rotated token. Await `ensureCodexAuth()` instead where a refresh must complete first.
+
+The token endpoint and client id default to the public values the `codex` CLI uses; override them with `CODEX_OAUTH_TOKEN_URL` and `CODEX_OAUTH_CLIENT_ID` if they ever change.
 
 ## Model picker
 

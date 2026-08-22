@@ -14,6 +14,15 @@ export interface TuiStore {
   dispatch(event: AgentEvent): void
   /** Replace all messages (e.g. on session resume or /clear). */
   reset(messages: Message[]): void
+  /**
+   * Show a transient status hint for `ttlMs` (default 2s), then clear it.
+   *
+   * Unlike a notice, a hint is not part of the transcript: it carries no
+   * durable meaning and never enters the message history. Used for ephemeral
+   * confirmations like "anthropic connected" after /connect — the same role
+   * mode switches play via the persistent status bar, but time-boxed.
+   */
+  setHint(text: string, ttlMs?: number): void
   /** subscribe(listener) -> unsubscribe; fires only on actual state changes. */
   subscribe(listener: () => void): () => void
 }
@@ -28,6 +37,8 @@ export function createTuiStore(initial: Message[]): TuiStore {
   // Session generation. The transcript keys its <Static> region on this so a
   // reset (which shrinks the message list) remounts rather than re-printing.
   let epoch = 0
+  // Timer for the currently-scheduled hint clear, so setHint/reset can cancel it.
+  let hintTimer: ReturnType<typeof setTimeout> | undefined
 
   const notify = (): void => {
     for (const l of listeners) l()
@@ -52,8 +63,33 @@ export function createTuiStore(initial: Message[]): TuiStore {
       // The epoch bump tells the transcript to remount its <Static> region:
       // the message list just shrank, and Ink's <Static> cannot handle that.
       epoch += 1
+      if (hintTimer !== undefined) {
+        clearTimeout(hintTimer)
+        hintTimer = undefined
+      }
       state = { ...fromMessages(messages), epoch }
       notify()
+    },
+
+    setHint(text: string, ttlMs: number = 2000): void {
+      if (hintTimer !== undefined) {
+        clearTimeout(hintTimer)
+        hintTimer = undefined
+      }
+      // Preserve any existing reducer state (messages, usage, …) — the hint
+      // is UI-only and rides alongside the real state without disturbing it.
+      state = { ...state, hint: text }
+      notify()
+      const timer = setTimeout(() => {
+        // Only clear if this hint is still the one we set (a later setHint
+        // resets the timer and would otherwise be clobbered).
+        if (state.hint === text) {
+          state = { ...state, hint: undefined }
+          notify()
+        }
+        if (hintTimer === timer) hintTimer = undefined
+      }, ttlMs)
+      hintTimer = timer
     },
 
     subscribe(listener: () => void): () => void {

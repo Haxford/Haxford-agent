@@ -775,3 +775,147 @@ export async function fetchOpenRouterCatalog(): Promise<CatalogModel[]> {
   })
   return started
 }
+
+/**
+ * Re-fetch the OpenRouter catalog, bypassing the in-module cache.
+ *
+ * Called from the host after a newly-authed OpenRouter key is saved, so the
+ * picker's live catalog reflects models the new key unlocks on the next
+ * rerender. A failure is not cached, so the next call retries normally.
+ */
+export async function refreshOpenRouterCatalog(): Promise<CatalogModel[]> {
+  catalogCache = undefined
+  catalogInFlight = undefined
+  return fetchOpenRouterCatalog()
+}
+
+/* -------------------------------------------------------------------------- */
+/* Key verification                                                            */
+/* -------------------------------------------------------------------------- */
+
+/** Outcome of verifying a provider key with a live authenticated request. */
+export type VerifyKeyResult = { ok: true } | { ok: false; error: string }
+
+/** Max time a verification request may run before we give up on it. */
+const VERIFY_TIMEOUT_MS = 10_000
+
+/**
+ * The cheapest authenticated GET each provider accepts. Used by /connect to
+ * confirm a pasted key actually works before saving it, so a typo never lands
+ * in config and silently breaks every later turn.
+ *
+ * Strategy per provider:
+ *  - anthropic:    GET /v1/models with `x-api-key` + `anthropic-version`.
+ *  - openrouter:   GET /v1/key with `Authorization: Bearer` (returns key info).
+ *  - openai/zai/moonshot/opencode and any OpenAI-compatible custom gateway:
+ *                  GET <base>/models with `Authorization: Bearer`.
+ *  - ollama:       no key required; verify by probing the daemon's /api/tags.
+ *  - codex:        reuses a ChatGPT login token (not an API key); /connect
+ *                  cannot verify it cheaply, so it is trusted as-is.
+ *
+ * A 2xx response means the key is good. 401/403 means the provider rejected
+ * it. Anything else (network failure, timeout, unexpected status) is reported
+ * as an error string the dialog surfaces, never thrown.
+ */
+export async function verifyProviderKey(
+  provider: string,
+  apiKey: string,
+  baseURL?: string,
+): Promise<VerifyKeyResult> {
+  const canonical = ALIASES[provider] ?? provider
+  const def = PROVIDERS[canonical]
+
+  // Codex reuses a ChatGPT login token; there is no cheap API-key check.
+  if (canonical === "codex") return { ok: true }
+
+  const override = (baseURL ?? "").trim()
+  const base = (override || def?.baseURL || def?.resolveBaseURL?.() || "").trim()
+
+  // Ollama is keyless; verification is a daemon reachability probe.
+  if (canonical === "ollama") {
+    const target = base || ollamaTarget().baseURL
+    const reachable = await probeOllama(target)
+    return reachable
+      ? { ok: true }
+      : { ok: false, error: `Could not reach Ollama at ${target}. Is the daemon running?` }
+  }
+
+  if (apiKey.trim() === "") return { ok: false, error: "API key is empty." }
+
+  try {
+    const outcome = await probeKey(canonical, def, apiKey.trim(), base)
+    return outcome
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: `Could not verify the key: ${msg}` }
+  }
+}
+
+/**
+ * One authenticated GET, classifying the response. Never throws — network
+ * errors are caught by the caller and surfaced as error strings.
+ */
+async function probeKey(
+  canonical: string,
+  def: ProviderDef | undefined,
+  apiKey: string,
+  base: string,
+): Promise<VerifyKeyResult> {
+  let url: string
+  let headers: Record<string, string>
+
+  switch (canonical) {
+    case "anthropic": {
+      url = `${base || "https://api.anthropic.com/v1"}/models`
+      headers = { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
+      break
+    }
+    case "openrouter": {
+      url = `${base || "https://openrouter.ai/api/v1"}/key`
+      headers = { Authorization: `Bearer ${apiKey}`, ...(def?.headers ?? {}) }
+      break
+    }
+    default: {
+      // openai, zai, moonshot, opencode, and any custom OpenAI-compatible
+      // gateway: GET <base>/models with a bearer token.
+      if (base === "") {
+        // No endpoint to check against (a custom provider with no baseURL);
+        // trust the key rather than blocking the connect flow.
+        return { ok: true }
+      }
+      url = `${base.replace(/\/+$/, "")}/models`
+      headers = { Authorization: `Bearer ${apiKey}`, ...(def?.headers ?? {}) }
+      break
+    }
+  }
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: `Network error verifying the key: ${msg}` }
+  } finally {
+    // Drop the body promptly; we only care about the status.
+  }
+
+  // Cancel any body stream without reading it.
+  try {
+    await response.body?.cancel()
+  } catch {
+    /* ignore */
+  }
+
+  if (response.ok) return { ok: true }
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, error: `The provider rejected the key (HTTP ${response.status}).` }
+  }
+  return {
+    ok: false,
+    error: `Unexpected response (HTTP ${response.status}) from ${url}.`,
+  }
+}

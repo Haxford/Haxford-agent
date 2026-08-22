@@ -7,12 +7,36 @@ Every tool action is gated by a rule engine. The engine decides `allow` (run wit
 | Mode | Behavior | When to use |
 |---|---|---|
 | `build` (default) | Evaluate rules; anything landing on `ask` prompts the user. Read-only bash chains with no matching rule also run without a prompt. | Day-to-day work where you want to approve mutations. |
-| `auto` | Allow everything except what a rule explicitly `deny`s. No prompts. | Trusted repetitive work; CI; `bun test` loops. |
+| `auto` | Allow everything except what a rule explicitly `deny`s. No prompts. Narrowed by [scoped trust](#scoped-trust) when configured. | Trusted repetitive work; CI; `bun test` loops. |
 | `plan` | Read-only. `write` and `edit` are denied outright without prompting. `bash` is allowed only for commands on the [read-only allowlist](#read-only-bash-allowlist). `task` subagents inherit plan mode. | Exploring an unfamiliar codebase; research; review. |
 
 Switch modes with `--mode build|auto|plan` on the CLI, `/mode [build|auto|plan]` in the TUI, or `tab` in an empty idle composer (cycles build → auto → plan → build).
 
 In print mode (`-p`), there is no UI to ask — gated actions are denied unless the mode allows them. Use `--mode auto` if the prompt must run tools.
+
+## Scoped trust
+
+Auto mode's blanket allow assumes you meant the whole workspace. `permission.trust` narrows it to a scope you name:
+
+```json
+{
+  "permission": {
+    "edit": { "src/generated/**": "deny" },
+    "trust": {
+      "paths": ["src/**", "docs/*.md"],
+      "commands": ["bun test", "git status"]
+    }
+  }
+}
+```
+
+In auto mode with a trust block:
+
+- An action inside the scope is allowed with no prompt. `paths` are the same globs rule patterns use, matched against the tool's path subject (relative patterns also match paths inside the project root; a trailing `/` covers everything beneath). `commands` are prefixes, ending on a word boundary — `git status` covers `git status --short` but not `gitstatus`; a prefix containing `*` is matched as a glob. Every command in a chain must be trusted, so trusting `git status` does not vouch for `git status && rm -rf /`.
+- An action **outside** the scope escalates to `ask` instead of being allowed. Explicit `allow` rules and the read-only tool defaults (`read`, `glob`, `grep`, `todoread`, `todowrite`) still allow without prompting.
+- An explicit `deny` always wins, inside the scope or out.
+
+`trust` is a reserved key under `permission`, not a tool name; it never participates in rule matching. Blocks from the global, project, and project-local layers are additive. With no `trust` block — or one that names no paths and no commands — auto mode behaves exactly as it always has. Trust has no effect in `build` or `plan` mode.
 
 ## Rules
 

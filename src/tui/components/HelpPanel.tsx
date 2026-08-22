@@ -29,7 +29,7 @@ export const KEYBINDINGS: CommandRow[] = [
   { command: "tab", description: "cycle permission mode when the composer is empty" },
   { command: "↑ / ↓", description: "navigate prompt history or a picker list" },
   { command: "a / l / d", description: "allow once / always (session) / deny a permission request" },
-  { command: "ctrl+c", description: "abort the run, then exit" },
+  { command: "ctrl+c", description: "interrupt the run; twice in a row when idle to quit" },
 ]
 
 /** Flatten rows into the legacy single-string HELP_TEXT for back-compat. */
