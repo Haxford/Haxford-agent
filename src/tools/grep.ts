@@ -129,13 +129,16 @@ async function scanFiles(
 ): Promise<Match[]> {
   const pattern = includeToGlob(include)
   const glob = new Bun.Glob(pattern)
+  // Collect one extra match beyond the limit so the caller can tell
+  // "there were more" from "exactly this many" when it truncates.
+  const cap = limit + 1
   const matches: Match[] = []
   const ignorePatterns = await readGitignores(root)
   const alwaysIgnore = [".git", "node_modules"]
 
   for await (const entry of glob.scan({ cwd: root, onlyFiles: true })) {
     if (signal.aborted) break
-    if (matches.length >= limit) break
+    if (matches.length >= cap) break
     const segments = entry.split("/")
     if (alwaysIgnore.some((dir) => segments.includes(dir))) continue
     if (ignorePatterns.length > 0 && isIgnored(entry, ignorePatterns)) continue
@@ -154,7 +157,7 @@ async function scanFiles(
         regex.lastIndex = 0
         if (!regex.test(text)) continue
         matches.push({ path, line: i + 1, text: clampLine(text) })
-        if (matches.length >= limit) break
+        if (matches.length >= cap) break
       }
     } catch {
       // Unreadable file — skip it rather than failing the whole search.
