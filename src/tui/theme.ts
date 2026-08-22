@@ -67,6 +67,14 @@ export interface Theme {
    * exists to avoid.
    */
   codeSpan: string
+  /**
+   * The model name, everywhere it appears.
+   *
+   * One colour for one concept: the banner, the breadcrumb, and the model
+   * picker all name the same thing, and a reader should not have to work out
+   * that they mean the same thing from three different treatments.
+   */
+  model: string
   /** The user's own words. */
   user: string
   /** Tool icon glyph when the call is healthy. */
@@ -100,6 +108,7 @@ export const dark: Theme = {
   diffCtx: "gray",
 
   codeSpan: "cyan",
+  model: "cyan",
   user: "green",
   toolIcon: "cyan",
 }
@@ -168,5 +177,33 @@ export function railProps(
     borderBottom: false,
     borderColor: color,
     borderDimColor: dim,
+  }
+}
+
+/**
+ * Props for a full-width horizontal rule: a Box with only its bottom edge
+ * drawn, dim.
+ *
+ * The rule is the chrome separator — it brackets the input without boxing it.
+ * A box says "form field"; two rules say "this is where you type", which is
+ * the same information with none of the weight. Rendered as a border rather
+ * than a repeated glyph so Yoga measures the width and the line always spans
+ * the terminal exactly, at any size, with no resize handler.
+ */
+export function ruleProps(color: string = theme.dim): {
+  borderStyle: "single"
+  borderTop: false
+  borderLeft: false
+  borderRight: false
+  borderColor: string
+  borderDimColor: true
+} {
+  return {
+    borderStyle: "single",
+    borderTop: false,
+    borderLeft: false,
+    borderRight: false,
+    borderColor: color,
+    borderDimColor: true,
   }
 }

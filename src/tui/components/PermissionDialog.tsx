@@ -2,7 +2,7 @@ import { Box, Text } from "ink"
 import React from "react"
 
 import type { PermissionRequest } from "../../types/tool.ts"
-import { railProps, theme } from "../theme.ts"
+import { theme } from "../theme.ts"
 
 export interface PermissionDialogProps {
   request: PermissionRequest
@@ -47,11 +47,22 @@ export function PermissionDialog({ request }: PermissionDialogProps): React.Reac
   const kind = actionKind(request.tool)
   const subject = subjectOf(request)
   const args = formatArgs(request.args)
-  // A warning-coloured left rail, not a box: permissions render inline in the
-  // transcript flow rather than as a modal card. Same idiom as tool blocks,
-  // one step louder — this is the one place a coloured rail is earned.
+  // A single coloured border — the one interruption the chrome is allowed.
+  //
+  // Everywhere else groups with rails and separates with dim rules, precisely
+  // so that this can be different: a permission prompt is the only moment the
+  // UI stops the user rather than informing them, and it has to be
+  // unmistakable at a glance, not just one more block in the flow. The colour
+  // is `warning`, not `accent`, because accent is already spent on the prompt
+  // glyph and the active mode; yellow is what this file's palette reserves for
+  // "something wants your attention", which is the entire content here.
   return (
-    <Box flexDirection="column" {...railProps(kind.color, false)} paddingLeft={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="single"
+      borderColor={kind.color}
+      paddingX={1}
+    >
       <Box gap={1}>
         <Text color={kind.color} bold>{"△"}</Text>
         <Text bold color={kind.color}>{kind.word}</Text>

@@ -114,52 +114,101 @@ export function formatCost(cost: number): string {
 }
 
 /**
- * The persistent footer, rendered *below* the composer — the position every
- * reference harness uses.
+ * The persistent footer: one line, below the input's lower rule.
  *
- * Deliberately absent: the turn counter and the session id. Neither pi,
- * opencode, nor Claude Code surfaces either; both are implementation detail
- * competing with the numbers that matter.
+ * One line is the entire design. Everything that was competing for space here
+ * has a better home — the model and mode are named in the breadcrumb directly
+ * above, the cwd is in the banner, errors and interruptions are inline in the
+ * transcript where the thing that failed is, and the keybinding reference is
+ * behind /help. What is left is the state that changes while you work: whether
+ * the agent is busy, and how much of the window is gone.
+ *
+ * The right-hand side is a pointer, not a status: `/help` and nothing else. A
+ * footer that lists every key teaches nothing after the first minute and costs
+ * a row forever.
  */
 export function StatusBar({
-  model,
   mode,
   status,
   usage,
   contextLimit,
-  cwd,
-  error,
-  endReason,
   promptPricePerMtok,
   completionPricePerMtok,
 }: StatusBarProps): React.ReactElement {
-  const s = statusLabel(status)
   const badge = modeBadge(mode)
-  const r = endReason !== undefined ? reasonLabel(endReason) : undefined
   const pct = contextPercent(usage, contextLimit)
   const cost = sessionCost(usage, promptPricePerMtok, completionPricePerMtok)
+  const running = status === "running"
 
   return (
-    <Box flexDirection="column">
-      <Box paddingLeft={2} gap={1}>
-        {status === "running" ? <Spinner /> : <Text color={s.color}>●</Text>}
-        <Text color={badge.color}>{badge.text}</Text>
-        <Text dimColor>{model}</Text>
-        {/* Everything past here is right-aligned. */}
-        <Box flexGrow={1} justifyContent="flex-end" gap={1}>
-          {r !== undefined ? <Text color={r.color}>{r.text}</Text> : null}
-          {cwd !== undefined ? <Text dimColor>{cwd}</Text> : null}
-          {cost !== undefined ? <Text dimColor>{formatCost(cost)}</Text> : null}
-          {pct !== undefined ? <Text dimColor>ctx {pct}%</Text> : null}
-        </Box>
-      </Box>
-      {error !== undefined ? (
-        <Box paddingLeft={2}>
-          <Text color={theme.error} wrap="truncate-end">
-            {error.length > 100 ? error.slice(0, 100) + "…" : error}
-          </Text>
-        </Box>
+    <Box paddingLeft={2} gap={1}>
+      {/* The busy mark leads the line, so "is it doing something" is answered
+          at the far left where scanning starts — and it occupies a cell that
+          is empty when idle, so the rest of the line never shifts. */}
+      {running ? <Spinner /> : null}
+      <Text color={badge.color}>{badge.text}</Text>
+      <Text dimColor>{"mode (tab to cycle)"}</Text>
+      {pct !== undefined ? (
+        <>
+          <Text dimColor>·</Text>
+          <Text dimColor>{"ctx "}{pct}{"%"}</Text>
+        </>
       ) : null}
+      {cost !== undefined ? (
+        <>
+          <Text dimColor>·</Text>
+          <Text dimColor>{formatCost(cost)}</Text>
+        </>
+      ) : null}
+      <Box flexGrow={1} justifyContent="flex-end">
+        <Text dimColor>{"/help"}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+/**
+ * The inline record of how a turn ended, rendered in the transcript rather
+ * than in the chrome.
+ *
+ * An interrupt and an error are both things that happened *at a point in the
+ * conversation*, and a footer cell cannot say that: it shows the same text
+ * whether the failure was this turn or ten turns ago, and it vanishes the
+ * instant the next turn starts, which is exactly when the user goes looking
+ * for what went wrong. Inline, it stays where it happened.
+ */
+export function TurnOutcome({
+  status,
+  endReason,
+  error,
+}: {
+  status: StatusBarProps["status"]
+  endReason?: string
+  error?: string
+}): React.ReactElement | null {
+  // An abort is a deliberate act, so it is confirmed rather than reported as
+  // a fault: yellow, one word, no detail to read.
+  if (endReason === "aborted") {
+    return (
+      <Box paddingLeft={2}>
+        <Text color={theme.warning}>{"interrupted"}</Text>
+      </Box>
+    )
+  }
+  if (error !== undefined) {
+    return (
+      <Box paddingLeft={2}>
+        <Text color={theme.error} wrap="truncate-end">
+          {error.length > 200 ? error.slice(0, 200) + "\u2026" : error}
+        </Text>
+      </Box>
+    )
+  }
+  const reason = status === "ended" && endReason !== undefined ? reasonLabel(endReason) : undefined
+  if (reason === undefined) return null
+  return (
+    <Box paddingLeft={2}>
+      <Text color={reason.color}>{reason.text}</Text>
     </Box>
   )
 }

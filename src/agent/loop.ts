@@ -4,6 +4,7 @@ import {
   type ModelMessage,
   type ToolSet,
 } from "ai"
+import { extensionRegistry } from "../extend/registry.ts"
 import type { Mode } from "../permission/engine.ts"
 import { resolveModel } from "../providers/index.ts"
 import type { HaxfordConfig } from "../types/config.ts"
@@ -209,7 +210,19 @@ function buildToolSet(tools: Tool[], ctx: ToolContext): ToolSet {
     set[entry.id] = aiTool({
       description: entry.description,
       inputSchema: entry.parameters,
-      execute: async (args: unknown) => entry.execute(args, ctx),
+      execute: async (args: unknown) => {
+        // Extension hook: fires after the permission gate (the SDK only calls
+        // execute once the tool is cleared to run) and before the tool does
+        // any work. A hook that throws is caught by the registry and recorded
+        // — an observer must not be able to fail a tool call.
+        await extensionRegistry().fireToolCall({
+          tool: entry.id,
+          args: (args ?? {}) as Record<string, unknown>,
+          sessionID: ctx.sessionID,
+          agent: ctx.agent,
+        })
+        return entry.execute(args, ctx)
+      },
       // Keep the provider's view of the result identical to the model-facing
       // output we replay from history.
       toModelOutput: (result: unknown) => ({
@@ -547,6 +560,17 @@ export async function* runAgentLoop(
     }
   }
 
+  // Extension lifecycle. `fireStart` is idempotent per session id, so calling
+  // it on every prompt still means "once per session" — and a /reload clears
+  // the marker, which is what lets a freshly loaded extension see a start.
+  await extensionRegistry().fireStart({ cwd, sessionID })
+  if (finalUserMessage) {
+    await extensionRegistry().fireMessage({
+      ...finalUserMessage,
+      parts: [...finalUserMessage.parts],
+    })
+  }
+
   let turn = 0
 
   while (true) {
@@ -882,7 +906,11 @@ export async function* runAgentLoop(
     }
 
     message.time.completed = Date.now()
-    yield { type: "message.updated", message: snapshot() }
+    const settled = snapshot()
+    yield { type: "message.updated", message: settled }
+    // Fires once per completed message, never per delta: a hook that ran on
+    // every token would be called thousands of times a turn.
+    await extensionRegistry().fireMessage(settled)
     conversation.push(message)
 
     yield { type: "turn.end", turn }

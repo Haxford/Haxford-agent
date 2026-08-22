@@ -10,7 +10,9 @@ haxford loads JSON config from three layers and deep-merges them. Later layers w
 | Project | `./haxford.json` | Project-specific; safe to commit. |
 | Project-local | `./.haxford/settings.local.json` | Written by the permission engine on `always` answers. Machine-local — do **not** commit. |
 
-An `AGENTS.md` in the project root is read verbatim and appended to the system prompt as project instructions.
+A fourth file is config-adjacent but not a config layer: `.haxford/state.json`, written when you pick a model in the `/model` picker so the choice survives restarts. It holds `{ "model": "provider/model" }` only — see [model resolution](usage.md#model-resolution) for where it sits in the precedence order.
+
+An `AGENTS.md` in the project root is read verbatim and appended to the system prompt as project instructions. See [Using haxford → context files](usage.md#context-files).
 
 ## Merge rules
 
@@ -68,14 +70,7 @@ Custom providers (any name not in the built-in eight) are spoken to as OpenAI ch
 
 ## Environment variables
 
-| Variable | Effect |
-|---|---|
-| `HAXFORD_MODEL` | Override the default model spec. Lowest priority of the model overrides (`-m`/config win). |
-| `HAXFORD_DATA_DIR` | Override the sessions data root. See [Sessions](sessions.md#storage-layout). |
-| `OPENCODE_AUTH_PATH` | Override the opencode auth store path (defaults to `~/.local/share/opencode/auth.json`). |
-| `CODEX_HOME` | Override the codex auth file location (defaults to `~/.codex`). |
-
-Provider env keys (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, etc.) are listed in [Providers](providers.md).
+haxford reads a handful of runtime variables (`HAXFORD_MODEL`, `HAXFORD_DATA_DIR`, `OPENCODE_AUTH_PATH`, `CODEX_HOME`, …) plus one key per provider. The full reference lives in [Environment variables](environment-variables.md).
 
 ## Security
 
@@ -85,6 +80,8 @@ Prefer the environment or opencode's auth store for API keys. A `providers.<name
 
 ## Next
 
-- [Providers](providers.md) — the auth precedence and per-provider keys.
-- [Permissions](permissions.md) — the `permission` block in detail.
-- [Sessions](sessions.md) — `HAXFORD_DATA_DIR` and the storage layout.
+- [Providers](providers.md) - the auth precedence and per-provider keys.
+- [Permissions](permissions.md) - the `permission` block in detail.
+- [Security](security.md) - credential storage guidance and startup warnings.
+- [Environment variables](environment-variables.md) - the env-var reference.
+- [Sessions](sessions.md) - `HAXFORD_DATA_DIR` and the storage layout.

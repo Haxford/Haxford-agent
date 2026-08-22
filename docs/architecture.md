@@ -67,7 +67,7 @@ A tool that fails returns a `ToolResult` describing the failure; only programmer
 | `src/types/` | Shared contracts (FROZEN — import, never modify). |
 | `src/agent/` | Agentic loop, system prompt, retry, compaction. |
 | `src/providers/` | AI SDK model/provider resolution and auth. |
-| `src/tools/` | Tool implementations: `read`, `write`, `edit`, `bash`, `glob`, `grep`, `todo` (read+write), `task` (subagent). |
+| `src/tools/` | Tool implementations: `read`, `write`, `edit`, `bash`, `glob`, `grep`, `todo` (read+write), `task` (subagent), `webfetch`. Documented in [Tools](tools.md). |
 | `src/permission/` | Permission rule engine and always-allow persistence. |
 | `src/session/` | JSONL session persistence, resume, fork. |
 | `src/tui/` | Ink TUI: transcript, composer, dialogs, slash commands, theme. |
@@ -82,6 +82,7 @@ haxford follows [AGENTS.md](../AGENTS.md) as its convention contract. The short 
 - Runtime is Bun: prefer `Bun.file`, `Bun.write`, `Bun.spawn` over Node equivalents.
 - Small modules, async/await, no classes unless state genuinely demands it.
 - Tests use `bun test` (import from `bun:test`).
+- Docs live in `docs/`; when behavior changes, update the page that documents it (start at [index](index.md)).
 
 ```bash
 bun test            # run all tests

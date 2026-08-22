@@ -1,27 +1,50 @@
-# haxford docs
+# haxford documentation
 
-haxford is a single-process terminal AI coding agent. It assembles a system prompt with tool schemas, streams model output, executes tool calls in one process, and feeds results back until the model stops calling tools. Sessions persist as append-only JSONL.
+haxford is a single-process terminal AI coding agent. It assembles a system prompt with tool schemas, streams model output, executes tool calls in one process, and feeds results back until the model stops calling tools. Sessions persist as append-only JSONL so they resume and fork without rewrite.
+
+## Start here
+
+- [Getting started](getting-started.md) - install, authenticate, and run a first session.
+- [Using haxford](usage.md) - CLI reference, interactive mode, context files, print mode.
+- [Providers](providers.md) - all eight providers, auth precedence, `/connect`, model specs.
+- [Tools](tools.md) - the ten built-in tools, their caps and defaults.
+- [Permissions](permissions.md) - modes, rule syntax, scoped trust, always-allow persistence.
+- [Commands](commands.md) - slash commands, autocomplete, keybindings.
+- [Security](security.md) - trust model, credential handling, vulnerability reporting.
+
+## Configuration
+
+- [Configuration](configuration.md) - config files, merge rules, full schema.
+- [Environment variables](environment-variables.md) - every variable haxford reads.
+- [Sessions](sessions.md) - storage layout, resume, fork, compaction.
+
+## Reference
+
+- [Session format](session-format.md) - JSONL transcript schema and entry types.
+- [Architecture](architecture.md) - loop → events → store, frozen contracts, contributing.
+- [`AGENTS.md`](../AGENTS.md) - the contributor convention contract.
 
 ## Feature map
 
 | Capability | Status | Where to read more |
 |---|---|---|
 | Interactive TUI | Yes — Ink/React, 16-color palette, left-rail grouping, `<Static>` transcript | [Getting started](getting-started.md) |
-| Print mode (`-p`) | Yes — non-interactive, streams to stdout | [Getting started](getting-started.md#non-interactive-mode) |
-| Providers | 8 built-in (Anthropic, OpenAI, OpenRouter, Ollama, z-ai, Moonshot, opencode zen, codex) + custom gateways | [Providers](providers.md) |
-| Live model catalog | OpenRouter catalog with pricing, cached 1h | [Providers](providers.md#model-picker) |
-| Permission modes | `build`, `auto`, `plan` — rule engine + always-allow persistence | [Permissions](permissions.md) |
+| Print mode (`-p`) | Yes — non-interactive, streams to stdout | [Usage → print mode](usage.md#print-mode) |
+| Providers | 8 built-in (Anthropic, OpenAI, OpenRouter, Ollama, z.ai, Moonshot, opencode zen, codex) + custom gateways | [Providers](providers.md) |
+| Live model catalog | OpenRouter catalog with pricing, cached 1h | [Providers → model picker](providers.md#model-picker) |
+| Permission modes | `build`, `auto`, `plan` — rule engine + scoped trust + always-allow persistence | [Permissions](permissions.md) |
+| Tools | Ten built-in: `read`, `write`, `edit`, `bash`, `glob`, `grep`, `todowrite`, `todoread`, `task`, `webfetch` | [Tools](tools.md) |
 | Slash commands | 8 built-in with autocomplete | [Commands](commands.md) |
-| Sessions | JSONL append-only, resume, fork, compaction | [Sessions](sessions.md) |
-| Subagents | `task` tool spawns a nested loop, inherits mode, hard 30-turn budget | [Architecture](architecture.md) |
+| Sessions | JSONL append-only, resume, fork, compaction | [Sessions](sessions.md) · [Session format](session-format.md) |
+| Subagents | `task` tool spawns a nested loop, inherits mode, cannot prompt, hard 30-turn budget | [Tools → task](tools.md#task) |
 | Retry | Classifier-driven, exponential backoff, quota errors fail fast | [Sessions → retry](sessions.md#tools-retry-and-the-loop) |
-| Image input | No — text parts only | — |
-| MCP / plugins | No — not yet | — |
+| Image input | No — text parts only (the message contract reserves an image part) | [Session format](session-format.md#parts) |
+| MCP / plugins | No — not yet | [Tools → adding tools](tools.md#adding-tools) |
 
 ## Where to start
 
 - New to haxford? [Getting started](getting-started.md).
 - Setting up a provider key? [Providers](providers.md).
-- Want to approve fewer prompts? [Permissions](permissions.md) — `auto` mode and always-allow.
+- Want to approve fewer prompts? [Permissions](permissions.md) — `auto` mode and scoped trust.
 - Configuring defaults? [Configuration](configuration.md).
 - Contributing? [Architecture](architecture.md) and [`AGENTS.md`](../AGENTS.md).

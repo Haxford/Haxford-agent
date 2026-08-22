@@ -64,39 +64,48 @@ function mount(overrides: {
 }
 
 describe("HaxfordApp rendering + app-level input", () => {
-  test("initial render shows the banner, its affordance grid, and the footer", () => {
+  test("initial render shows the banner box, the breadcrumb, and the footer", () => {
     const { inst } = mount()
     const frame = inst.lastFrame() ?? ""
+    // Banner: what this is, who you are, what is answering, where you are.
+    expect(frame).toContain("haxford v")
+    expect(frame).toContain("Welcome back,")
     expect(frame).toContain("mock/demo")
-    expect(frame).toContain("build") // mode word, no brackets
-    expect(frame).toContain("haxford") // banner wordmark
-    // The empty state teaches: the hint grid names the keys it accepts.
+    // Breadcrumb: mode, short model, how to change it.
+    expect(frame).toContain("/model to change")
+    // Footer: the mode and the pointer, and nothing else.
+    expect(frame).toContain("mode (tab to cycle)")
     expect(frame).toContain("/help")
-    expect(frame).toContain("commands")
-    expect(frame).toContain("cycle mode")
-    expect(frame).toContain("interrupt")
     // No ASCII art: the wordmark line is plain text.
-    expect(frame).not.toContain("█")
-    expect(frame).not.toContain("▀")
+    expect(frame).not.toContain("\u2588")
+    expect(frame).not.toContain("\u2580")
   })
 
-  test("status bar renders below the composer", () => {
+  test("the footer is the last line, below the composer and its rules", () => {
     const { inst } = mount()
-    const lines = (inst.lastFrame() ?? "").split("\n")
+    const lines = (inst.lastFrame() ?? "").split("\n").filter((l) => l.trim().length > 0)
     const composer = lines.findIndex((l) => l.includes("ask anything"))
-    const status = lines.findIndex((l) => l.includes("mock/demo") && l.includes("build"))
+    const footer = lines.findIndex((l) => l.includes("mode (tab to cycle)"))
     expect(composer).toBeGreaterThanOrEqual(0)
-    expect(status).toBeGreaterThan(composer)
+    expect(footer).toBe(lines.length - 1)
+    expect(footer).toBeGreaterThan(composer)
   })
 
-  test("no rounded box borders anywhere in the default frame", () => {
+  test("exactly one box in the default frame, and it is the banner", () => {
     const { inst } = mount()
     const frame = inst.lastFrame() ?? ""
-    for (const glyph of ["╭", "╮", "╰", "╯", "─"]) {
-      expect(frame).not.toContain(glyph)
+    // A border reads as "a distinct thing" precisely once per screen. The
+    // corners are counted rather than merely detected: a second box is the
+    // regression this guards against, not the absence of the first.
+    for (const corner of ["\u256d", "\u256e", "\u2570", "\u256f"]) {
+      expect(frame.split(corner).length - 1).toBe(1)
     }
-    // The left rail is the one grouping device that remains.
-    expect(frame).toContain("┃")
+    // The input is bracketed by rules, not boxed: full-width horizontals with
+    // no corners of their own.
+    const rules = (inst.lastFrame() ?? "")
+      .split("\n")
+      .filter((l) => /^\u2500+$/.test(l.trim()) && l.trim().length > 20)
+    expect(rules).toHaveLength(2)
   })
 
   test("Composer is disabled while running (placeholder hint)", async () => {

@@ -73,6 +73,9 @@ When no rule matches, the tool default applies:
 |---|---|
 | `read`, `glob`, `grep`, `todoread`, `todowrite` | `allow` |
 | `write`, `edit`, `bash`, `task` | `ask` |
+| `webfetch` | `ask` |
+
+In `plan` mode the read-only set — `read`, `glob`, `grep`, `todoread`, `todowrite`, **and** `webfetch` — is allowed outright; see [Tools](tools.md#webfetch) for why fetching counts as read-only.
 
 ## Compound bash commands
 
@@ -113,5 +116,7 @@ Anything containing shell-control characters (`; & | \` $ ( ) { } < > newline re
 
 ## Next
 
-- [Commands](commands.md) — the `/mode` command and its keybinding.
-- [Configuration](configuration.md) — where `permission` rules live.
+- [Tools](tools.md) - what each gated tool actually does.
+- [Commands](commands.md) - the `/mode` command and its keybinding.
+- [Security](security.md) - the broader trust model.
+- [Configuration](configuration.md) - where `permission` rules live.

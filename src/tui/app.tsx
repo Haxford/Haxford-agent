@@ -1,11 +1,12 @@
-import { Box, Static, Text, useInput } from "ink"
+import { Box, Static, Text, useInput, useStdout } from "ink"
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
 import type { Message } from "../types/message.ts"
 import type { SessionInfo } from "../types/session.ts"
 import type { PermissionRequest } from "../types/tool.ts"
 import type { ApprovalBridge } from "./approval.ts"
-import { Banner, shortCwd } from "./components/Banner.tsx"
+import { Banner, BANNER_HEIGHT } from "./components/Banner.tsx"
+import { Breadcrumb } from "./components/Breadcrumb.tsx"
 import { Composer, type ComposerHandle } from "./components/Composer.tsx"
 import { ConnectDialog } from "./components/ConnectDialog.tsx"
 import { HelpPanel, HELP_TEXT, COMMANDS, type CommandRow } from "./components/HelpPanel.tsx"
@@ -14,8 +15,17 @@ import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { SessionPicker } from "./components/SessionPicker.tsx"
 import { SlashAutocomplete } from "./components/SlashAutocomplete.tsx"
 import { SpinnerProvider } from "./components/Spinner.tsx"
-import { ActivityLine, StatusBar } from "./components/StatusBar.tsx"
+import { ActivityLine, StatusBar, TurnOutcome } from "./components/StatusBar.tsx"
 import { MessageView, Transcript } from "./components/Transcript.tsx"
+import { useTerminalSize } from "./hooks.ts"
+import {
+  BREADCRUMB_LINES,
+  FOOTER_LINES,
+  bottomPadding,
+  composerHeight,
+  estimateTranscriptLines,
+} from "./layout.ts"
+import { synchronizedStdout } from "./raw.ts"
 import { splitTranscript } from "./state.ts"
 import { railProps, theme } from "./theme.ts"
 import type { TuiStore } from "./store.ts"
@@ -33,8 +43,30 @@ export { HELP_TEXT }
  * can never arm. Hosts render with:
  *
  *   render(element, INK_RENDER_OPTIONS)
+ *
+ * It also carries a synchronized-output view of stdout. Ink offers no hook
+ * around its own writes and it throttles when they happen, so the only safe
+ * place to bracket a frame is the stream it writes to — see `raw.ts`. Passing
+ * these options is therefore what makes the live region redraw atomically
+ * instead of visibly erasing and repainting at streaming rates.
  */
-export const INK_RENDER_OPTIONS = { exitOnCtrlC: false } as const
+export const INK_RENDER_OPTIONS = {
+  exitOnCtrlC: false,
+  stdout: synchronizedStdout(process.stdout),
+} as const
+
+/**
+ * A `StaticItem` is either the once-printed banner or a settled message.
+ *
+ * Ink's `<Static>` writes each item exactly once and never revisits it, which
+ * is precisely the lifetime the banner wants: printed at session start, then
+ * scrollback like any other output. Modelling it as the first item of the same
+ * region — rather than a conditional in the live tree — is what makes "once"
+ * structural instead of a rule someone has to remember.
+ */
+type StaticItem =
+  | { kind: "banner"; id: string }
+  | { kind: "message"; id: string; message: Message }
 
 /** How long a transient status hint stays on screen (ms). */
 export const HINT_MS = 2000
@@ -693,10 +725,49 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     if (running) setRunStartedAt(Date.now())
   }, [running])
 
-  const showBanner =
-    state.messages.length === 0 && state.notices.length === 0 && pending === undefined
   const overlay =
     ui.showHelp || ui.showModelPicker || ui.showConnect || ui.showSessions.kind !== "idle" || pending !== undefined
+
+  // The banner leads the static region, so it prints once per session and is
+  // never redrawn. A `/clear` or a resume bumps the epoch, which remounts the
+  // region — and a new session is exactly when a session header should print
+  // again.
+  const staticItems = useMemo<StaticItem[]>(
+    () => [
+      { kind: "banner", id: "banner" },
+      ...finalized.map((message): StaticItem => ({ kind: "message", id: message.id, message })),
+    ],
+    [finalized],
+  )
+
+  // --- bottom pinning ------------------------------------------------------
+  // A fresh session would otherwise draw its composer a third of the way down
+  // the screen with dead space beneath it. Blank lines above the live region
+  // push the input and footer onto the last rows instead, and every line the
+  // transcript gains is a line of padding it takes back, so the padding decays
+  // to nothing on its own once the content fills the viewport.
+  const { stdout } = useStdout()
+  const { columns, rows } = useTerminalSize(stdout)
+  const transcriptLines = useMemo(
+    () => estimateTranscriptLines(state.messages, columns) + state.notices.length,
+    [state.messages, state.notices.length, columns],
+  )
+  const padding = overlay
+    ? // An overlay is tall, transient, and measured by nothing here. Guessing
+      // its height and guessing low would push the composer off the bottom of
+      // the screen, so padding simply stands down while one is open.
+      0
+    : bottomPadding({
+        height: rows,
+        banner: BANNER_HEIGHT,
+        breadcrumb: BREADCRUMB_LINES,
+        input: composerHeight(composerValue, columns),
+        footer: FOOTER_LINES,
+        transcript:
+          transcriptLines +
+          (running ? 1 : 0) +
+          (activeHint !== undefined ? 1 : 0),
+      })
 
   return (
     <SpinnerProvider active={running}>
@@ -718,24 +789,36 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         call at its old size — a toggle that visibly applies to some of the
         screen is worse than one that applies to none of it.
       */}
-      <Static key={`${state.epoch}:${state.toolsExpanded ? "x" : "c"}`} items={finalized}>
-        {(m) => (
-          <Box key={m.id} flexDirection="column" marginTop={1}>
-            <MessageView message={m} toolsExpanded={state.toolsExpanded} />
-          </Box>
-        )}
+      <Static key={`${state.epoch}:${state.toolsExpanded ? "x" : "c"}`} items={staticItems}>
+        {(item) =>
+          item.kind === "banner" ? (
+            // No marginTop: the banner is the first thing on the screen, and
+            // a blank line above it is a blank line at the top of the session.
+            <Box key="banner" flexDirection="column">
+              <Banner model={model} cwd={cwd ?? "."} contextLimit={contextLimit} />
+            </Box>
+          ) : (
+            <Box key={item.id} flexDirection="column" marginTop={1}>
+              <MessageView message={item.message} toolsExpanded={state.toolsExpanded} />
+            </Box>
+          )
+        }
       </Static>
 
       <Box flexDirection="column">
-        {showBanner ? (
-          <Banner model={model} cwd={cwd ?? shortCwd(".")} contextLimit={contextLimit} />
-        ) : null}
+        {/* Bottom-pinning padding. First in the live region, so what follows
+            it lands on the terminal's last rows. */}
+        {padding > 0 ? <Box height={padding} flexShrink={0} /> : null}
 
         {live.length > 0 || state.notices.length > 0 ? (
           <Box marginTop={finalized.length > 0 ? 1 : 0}>
             <Transcript messages={live} notices={state.notices} toolsExpanded={state.toolsExpanded} />
           </Box>
         ) : null}
+
+        {/* How the last turn ended, inline where it happened: "interrupted"
+            for a deliberate abort, the error in red for a failure. */}
+        <TurnOutcome status={state.status} endReason={state.endReason} error={state.error} />
 
         {pending !== undefined ? (
           <Box marginTop={1}>
@@ -751,7 +834,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
 
         {ui.showSessions.kind === "loading" ? (
           <Box marginTop={1} {...railProps()} paddingLeft={1}>
-            <Text dimColor>{"loading sessions…"}</Text>
+            <Text dimColor>{"loading sessions\u2026"}</Text>
           </Box>
         ) : null}
 
@@ -809,32 +892,41 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         ) : null}
 
         {/*
+          The chrome stack: everything below here is fixed-height and always
+          on screen, separated from the transcript by exactly one blank row.
+          One margin for the whole group rather than one per member is what
+          lets the pin math treat its height as a constant.
+        */}
+        <Box flexDirection="column" marginTop={1}>
+        {/*
           Transient chrome feedback (mode switch, ctrl+c confirmation). It sits
-          exactly where the activity line sits — the one line the eye is already
-          trained on — and expires on its own, so nothing it says ever reaches
-          the transcript.
+          directly above the breadcrumb — the band the eye is already trained
+          on — and expires on its own, so nothing it says ever reaches the
+          transcript.
         */}
         {activeHint !== undefined ? (
-          <Box marginTop={1} paddingLeft={2}>
+          <Box paddingLeft={2}>
             <Text dimColor>{activeHint}</Text>
           </Box>
         ) : null}
 
-        <Box marginTop={activeHint !== undefined ? 0 : running || overlay || live.length > 0 || showBanner ? 1 : 0}>
-          <Composer
-            disabled={composerDisabled}
-            mode={mode}
-            onSubmit={submit}
-            onValueChange={setComposerValue}
-            handleRef={composerRef}
-            placeholder={composerPlaceholder}
-            popupActive={acActive}
-            onPopupNavigate={onPopupNavigate}
-            onPopupAccept={onPopupAccept}
-            onPopupDismiss={onPopupDismiss}
-            autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
-          />
-        </Box>
+        {/* Mode and model, one line above where you type. Memoized on exactly
+            those two values, so a streaming reply never redraws it. */}
+        <Breadcrumb mode={mode} model={model} />
+
+        <Composer
+          disabled={composerDisabled}
+          mode={mode}
+          onSubmit={submit}
+          onValueChange={setComposerValue}
+          handleRef={composerRef}
+          placeholder={composerPlaceholder}
+          popupActive={acActive}
+          onPopupNavigate={onPopupNavigate}
+          onPopupAccept={onPopupAccept}
+          onPopupDismiss={onPopupDismiss}
+          autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
+        />
 
         <StatusBar
           model={model}
@@ -842,11 +934,9 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           status={state.status}
           usage={state.usage}
           contextLimit={contextLimit}
-          cwd={cwd !== undefined ? shortCwd(cwd) : undefined}
-          error={state.error}
-          endReason={state.endReason}
           {...pricing}
         />
+        </Box>
       </Box>
     </SpinnerProvider>
   )

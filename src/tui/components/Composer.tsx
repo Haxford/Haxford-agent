@@ -2,7 +2,8 @@ import { Box, Text, useInput } from "ink"
 import { TextInput } from "@inkjs/ui"
 import React, { useCallback, useState } from "react"
 
-import { modeColor, railProps, theme, type ThemeMode } from "../theme.ts"
+import { modeColor, theme, type ThemeMode } from "../theme.ts"
+import { Rule } from "./Rule.tsx"
 
 export interface ComposerHandle {
   /** Programmatically replace the input contents (completion, clear). */
@@ -122,24 +123,35 @@ export function Composer({
     }
   })
 
-  // The rail carries the mode; it dims while input is locked so a disabled
-  // composer reads as inert without a second signal.
-  const rail = modeColor(mode)
+  // The prompt glyph carries the mode. It is the single accented mark in the
+  // chrome, and it sits where the eye already is when typing.
+  const glyph = modeColor(mode)
 
   return (
     <Box flexDirection="column">
       {autocomplete}
-      <Box {...railProps(rail, disabled)} paddingLeft={1} gap={1}>
-        <Text color={disabled ? theme.muted : rail}>{disabled ? "•" : "›"}</Text>
-        <TextInput
-          key={resetKey}
-          isDisabled={disabled}
-          defaultValue={seed}
-          placeholder={placeholder ?? (disabled ? "agent running…" : "ask anything, or / for commands")}
-          onSubmit={commit}
-          onChange={onValueChange}
-        />
+      {/*
+        Rules above and below, not a box. A box around an input says "form
+        field"; two rules say "this is where you type" with none of the weight,
+        and they leave the region free to grow — @inkjs/ui renders its value in
+        a plain <Text>, so Ink soft-wraps long input and the area between the
+        rules expands on its own, with no height to keep in sync.
+      */}
+      <Rule />
+      <Box paddingLeft={1} gap={1}>
+        <Text color={disabled ? theme.muted : glyph}>{disabled ? "\u2022" : "\u203a"}</Text>
+        <Box flexGrow={1}>
+          <TextInput
+            key={resetKey}
+            isDisabled={disabled}
+            defaultValue={seed}
+            placeholder={placeholder ?? (disabled ? "agent running\u2026" : "ask anything, or / for commands")}
+            onSubmit={commit}
+            onChange={onValueChange}
+          />
+        </Box>
       </Box>
+      <Rule />
     </Box>
   )
 }

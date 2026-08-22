@@ -52,5 +52,6 @@ See [Permissions](permissions.md) for the full rule engine and the always-allow 
 
 ## Next
 
-- [Permissions](permissions.md) — the three modes and rule syntax.
-- [Sessions](sessions.md) — `/sessions`, `/compact`, and `/clear` in detail.
+- [Usage](usage.md) - the CLI flags and interactive-mode behavior behind these commands.
+- [Permissions](permissions.md) - the three modes and rule syntax.
+- [Sessions](sessions.md) - `/sessions`, `/compact`, and `/clear` in detail.

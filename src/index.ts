@@ -17,6 +17,8 @@ import { loadConfig, saveGlobalProviderCredential } from "./config/index.ts"
 import { loadProjectModel, saveProjectModel } from "./config/state.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
 import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels, refreshOpenRouterCatalog, verifyProviderKey } from "./providers/index.ts"
+import { APP_VERSION } from "./providers/attribution.ts"
+import { performUpdate } from "./update.ts"
 import {
   appendMessage,
   createSession,
@@ -60,6 +62,8 @@ interface CliArgs {
   cont: boolean
   session?: string
   help: boolean
+  version: boolean
+  update: boolean
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -69,6 +73,8 @@ function parseArgs(argv: string[]): CliArgs {
     print: false,
     cont: false,
     help: false,
+    version: false,
+    update: false,
   }
   const words: string[] = []
   for (let i = 0; i < argv.length; i++) {
@@ -78,6 +84,8 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "-c" || a === "--continue") args.cont = true
     else if (a === "-m" || a === "--model") args.model = argv[++i]
     else if (a === "-s" || a === "--session") args.session = argv[++i]
+    else if (a === "-v" || a === "--version") args.version = true
+    else if (a === "update") args.update = true
     else if (a === "--mode") {
       const m = argv[++i]
       if (m === "build" || m === "auto" || m === "plan") args.mode = m
@@ -440,6 +448,16 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
   if (args.help) {
     process.stdout.write(HELP)
+    return
+  }
+  if (args.version) {
+    process.stdout.write(`haxford ${APP_VERSION}\n`)
+    return
+  }
+  if (args.update) {
+    const result = await performUpdate()
+    process.stdout.write(`${result.message}\n`)
+    process.exitCode = result.ok ? 0 : 1
     return
   }
 

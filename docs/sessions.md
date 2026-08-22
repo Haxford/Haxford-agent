@@ -68,5 +68,6 @@ Retry is classifier-driven (not the AI SDK's own `maxRetries`, which is set to 0
 
 ## Next
 
-- [Architecture](architecture.md) — the loop, events, and store in one diagram.
-- [Configuration](configuration.md) — `autoCompactAt` and `maxTurns`.
+- [Session format](session-format.md) - the JSONL schema, entry types, and load semantics.
+- [Architecture](architecture.md) - the loop, events, and store in one diagram.
+- [Configuration](configuration.md) - `autoCompactAt` and `maxTurns`.

@@ -88,6 +88,9 @@ haxford -p --mode auto "run bun test and report failures"
 
 ## Next
 
-- [Providers](providers.md) — every built-in provider, the model spec format, and the codex login flow.
-- [Permissions](permissions.md) — the three modes and how rules evaluate.
-- [Commands](commands.md) — the eight slash commands and their keybindings.
+- [Using haxford](usage.md) - the full CLI reference, model resolution, and print mode details.
+- [Tools](tools.md) - what the agent can do on your behalf, tool by tool.
+- [Providers](providers.md) - every built-in provider, the model spec format, and `/connect`.
+- [Permissions](permissions.md) - the three modes and how rules evaluate.
+- [Security](security.md) - what haxford can touch, and how keys are stored.
+- [Environment variables](environment-variables.md) - everything it reads from your environment.

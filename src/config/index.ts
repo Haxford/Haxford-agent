@@ -27,9 +27,30 @@ export interface PermissionSection {
     | undefined
 }
 
-/** `HaxfordConfig` as it appears in a config file, before `trust` is split off. */
+/**
+ * `HaxfordConfig` as it appears in a config file, before the fields the frozen
+ * contract has no room for are split off.
+ *
+ * Two of them: `permission.trust` (see above) and `theme`. Both are real
+ * user-facing settings that `src/types/config.ts` does not declare, and that
+ * file is frozen — so they are parsed out here and carried on `LoadedConfig`
+ * instead of being smuggled into `HaxfordConfig`.
+ */
 export interface HaxfordConfigFile extends Omit<HaxfordConfig, "permission"> {
   permission?: PermissionSection
+  /** Name of a theme in `~/.haxford/themes`. `HAXFORD_THEME` overrides it. */
+  theme?: string
+}
+
+/** The reserved top-level key that selects a theme, not part of `HaxfordConfig`. */
+const THEME_KEY = "theme"
+
+/** Read `theme` out of one config layer, ignoring anything that is not a name. */
+function readThemeName(config: Partial<HaxfordConfigFile>): string | undefined {
+  const value: unknown = config[THEME_KEY]
+  if (typeof value !== "string") return undefined
+  const name = value.trim()
+  return name.length > 0 ? name : undefined
 }
 
 /** The reserved key in `permission` that is a trust block, not a tool. */
@@ -52,7 +73,7 @@ function stringList(value: unknown): string[] | undefined {
  * absent trust means "auto mode is unscoped", and a block that scopes nothing
  * would silently turn auto mode into build mode.
  */
-function readTrust(config: Partial<HaxfordConfig>): TrustConfig | undefined {
+function readTrust(config: Partial<HaxfordConfigFile>): TrustConfig | undefined {
   const permission: unknown = config.permission
   if (typeof permission !== "object" || permission === null) return undefined
   const block: unknown = (permission as Record<string, unknown>)[TRUST_KEY]
@@ -96,13 +117,15 @@ function mergeTrust(
  * consumer ever sees a "tool" called trust.
  */
 function stripTrust(
-  config: Partial<HaxfordConfig>,
+  config: Partial<HaxfordConfigFile>,
 ): PermissionRules | undefined {
   const rules = config.permission
   if (rules === undefined) return undefined
-  if (!(TRUST_KEY in rules)) return rules
   const { [TRUST_KEY]: _trust, ...rest } = rules
-  return rest
+  // `PermissionSection`'s index signature admits `undefined` (so `trust?:` can
+  // be declared alongside it); `PermissionRules`' does not. Removing the one
+  // optional key is exactly what makes the cast sound.
+  return rest as PermissionRules
 }
 
 /**
@@ -126,6 +149,13 @@ export interface LoadedConfig {
    * `trust` to scope auto mode; undefined leaves auto mode unscoped.
    */
   trust?: TrustConfig
+  /**
+   * The `theme` field, split out of the config file for the same reason as
+   * `trust`: `HaxfordConfig` is frozen and has no room for it. This is the
+   * theme *name*; `HAXFORD_THEME` still overrides it, which is why resolving
+   * it is `activeThemeName`'s job and not this loader's.
+   */
+  theme?: string
   /** Verbatim contents of AGENTS.md in the project root, if present. */
   projectInstructions?: string
   /**
@@ -143,11 +173,11 @@ function configDir(): string {
   return path.join(base, "haxford")
 }
 
-async function readJsonFile(file: string): Promise<Partial<HaxfordConfig>> {
+async function readJsonFile(file: string): Promise<Partial<HaxfordConfigFile>> {
   const f = Bun.file(file)
   if (!(await f.exists())) return {}
   try {
-    return (await f.json()) as Partial<HaxfordConfig>
+    return (await f.json()) as Partial<HaxfordConfigFile>
   } catch {
     return {}
   }
@@ -219,9 +249,9 @@ async function collectWarnings(
   globalPath: string,
   projectPath: string,
   localPath: string,
-  globalConfig: Partial<HaxfordConfig>,
-  projectConfig: Partial<HaxfordConfig>,
-  localConfig: Partial<HaxfordConfig>,
+  globalConfig: Partial<HaxfordConfigFile>,
+  projectConfig: Partial<HaxfordConfigFile>,
+  localConfig: Partial<HaxfordConfigFile>,
 ): Promise<string[]> {
   const warnings: string[] = []
 
@@ -288,16 +318,27 @@ export async function loadConfig(cwd: string): Promise<LoadedConfig> {
   const project = await readJsonFile(projectPath)
   const local = await readJsonFile(localPath)
 
+  // `theme` is pulled out rather than spread through: `HaxfordConfig` does not
+  // declare it, and leaving it on the object would put a field on the frozen
+  // contract by the back door.
+  const { [THEME_KEY]: _g, ...globalRest } = global
+  const { [THEME_KEY]: _p, ...projectRest } = project
+  const { [THEME_KEY]: _l, ...localRest } = local
+
   const config: HaxfordConfig = {
-    ...global,
-    ...project,
-    ...local,
+    ...globalRest,
+    ...projectRest,
+    ...localRest,
     providers: { ...global.providers, ...project.providers, ...local.providers },
     permission: mergePermission(
       mergePermission(stripTrust(global), stripTrust(project)),
       stripTrust(local),
     ),
   }
+
+  // Last layer that names one wins — a theme is a single choice, not a set.
+  const theme =
+    readThemeName(local) ?? readThemeName(project) ?? readThemeName(global)
 
   const trust = mergeTrust(
     mergeTrust(readTrust(global), readTrust(project)),
@@ -321,6 +362,7 @@ export async function loadConfig(cwd: string): Promise<LoadedConfig> {
   return {
     config,
     ...(trust !== undefined ? { trust } : {}),
+    ...(theme !== undefined ? { theme } : {}),
     ...(projectInstructions !== undefined ? { projectInstructions } : {}),
     warnings,
   }
