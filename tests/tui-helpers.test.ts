@@ -13,14 +13,17 @@ import {
   formatModelMeta,
   formatPrice,
   groupModels,
+  groupProviders,
   modelOf,
   normalizeModels,
   pageCount,
   paginate,
+  providerConnected,
   providerOf,
   type ModelOption,
+  type ProviderCatalogEntry,
 } from "../src/tui/components/ModelPicker.tsx"
-import { clampCursor, matchCommands, NO_ARG_COMMANDS, takesArg } from "../src/tui/app.tsx"
+import { clampCursor, matchCommands, NO_ARG_COMMANDS, parseSlashCommand, takesArg } from "../src/tui/app.tsx"
 
 describe("Banner.shortCwd", () => {
   test("returns the basename", () => {
@@ -248,7 +251,7 @@ describe("Slash autocomplete: matchCommands", () => {
     expect(matchCommands("")).toEqual([])
   })
   test("exact / and short prefixes match all", () => {
-    expect(matchCommands("/").length).toBe(8)
+    expect(matchCommands("/").length).toBe(9)
     expect(matchCommands("/m").map((r) => r.command)).toEqual(["/model", "/mode"])
   })
   test("case-insensitive", () => {
@@ -267,10 +270,12 @@ describe("Slash autocomplete: takesArg / NO_ARG_COMMANDS", () => {
     expect(NO_ARG_COMMANDS.has("/compact")).toBe(true)
     expect(NO_ARG_COMMANDS.has("/clear")).toBe(true)
     expect(NO_ARG_COMMANDS.has("/exit")).toBe(true)
+    expect(NO_ARG_COMMANDS.has("/connect")).toBe(true)
   })
   test("takesArg is false for no-arg commands, true otherwise", () => {
     expect(takesArg("/help")).toBe(false)
     expect(takesArg("/exit")).toBe(false)
+    expect(takesArg("/connect")).toBe(false)
     expect(takesArg("/model")).toBe(true)
     expect(takesArg("/mode")).toBe(true)
     expect(takesArg("/init")).toBe(true)
@@ -283,5 +288,98 @@ describe("Slash autocomplete: clampCursor", () => {
     expect(clampCursor(-1, 5)).toBe(4)  // wraps to end
     expect(clampCursor(5, 5)).toBe(0)  // wraps to start
     expect(clampCursor(0, 0)).toBe(0)  // empty list
+  })
+})
+
+describe("parseSlashCommand: /connect", () => {
+  test("/connect decodes to a connect action", () => {
+    expect(parseSlashCommand("/connect", "build")).toEqual({ kind: "connect" })
+  })
+  test("/connect is case-insensitive", () => {
+    expect(parseSlashCommand("/CONNECT", "build")).toEqual({ kind: "connect" })
+  })
+})
+
+describe("ModelPicker: providerConnected", () => {
+  const models: ModelOption[] = [
+    { spec: "anthropic/claude", available: true },
+    { spec: "anthropic/haiku", available: false },
+    { spec: "openai/gpt", available: false },
+    { spec: "ollama/llama", available: true },
+  ]
+  test("connected when at least one model is available", () => {
+    expect(providerConnected("anthropic", models)).toBe(true)
+    expect(providerConnected("ollama", models)).toBe(true)
+  })
+  test("unconnected when every model is unavailable", () => {
+    expect(providerConnected("openai", models)).toBe(false)
+  })
+  test("unknown provider is unconnected", () => {
+    expect(providerConnected("zai", models)).toBe(false)
+  })
+})
+
+describe("ModelPicker: groupProviders (level-1)", () => {
+  const models: ModelOption[] = [
+    { spec: "openai/gpt-5", available: true },
+    { spec: "openai/gpt-4", available: false },
+    { spec: "anthropic/claude", available: true },
+    { spec: "ollama/llama", available: false }, // unconnected, in catalog
+    { spec: "custom-gw/my-model", available: true }, // not in catalog
+  ]
+  const catalog: ProviderCatalogEntry[] = [
+    { name: "anthropic", connected: true },
+    { name: "openai", connected: true },
+    { name: "ollama", connected: false },
+    { name: "moonshot", connected: false }, // catalog-only (no models in list)
+  ]
+
+  test("connected providers come first, alphabetical", () => {
+    const rows = groupProviders(models, catalog)
+    const names = rows.map((r) => r.name)
+    // Connected tier (anthropic, custom-gw, openai) alphabetical, then unconnected (moonshot, ollama).
+    expect(names).toEqual(["anthropic", "custom-gw", "openai", "moonshot", "ollama"])
+  })
+
+  test("connected flag derived from model availability, not the catalog", () => {
+    const rows = groupProviders(models, catalog)
+    const byName = new Map(rows.map((r) => [r.name, r]))
+    expect(byName.get("anthropic")!.connected).toBe(true)
+    expect(byName.get("openai")!.connected).toBe(true)
+    // ollama has models but all unavailable -> unconnected (catalog agrees).
+    expect(byName.get("ollama")!.connected).toBe(false)
+    // moonshot has no models at all -> unconnected.
+    expect(byName.get("moonshot")!.connected).toBe(false)
+  })
+
+  test("connectable reflects catalog membership", () => {
+    const rows = groupProviders(models, catalog)
+    const byName = new Map(rows.map((r) => [r.name, r]))
+    expect(byName.get("anthropic")!.connectable).toBe(true)
+    expect(byName.get("ollama")!.connectable).toBe(true)
+    expect(byName.get("custom-gw")!.connectable).toBe(false) // not in catalog
+  })
+
+  test("modelCount is per-provider", () => {
+    const rows = groupProviders(models, catalog)
+    const byName = new Map(rows.map((r) => [r.name, r]))
+    expect(byName.get("openai")!.modelCount).toBe(2)
+    expect(byName.get("anthropic")!.modelCount).toBe(1)
+    expect(byName.get("moonshot")!.modelCount).toBe(0)
+  })
+
+  test("catalog-only providers (no models) are listed as unconnected", () => {
+    const rows = groupProviders(models, catalog)
+    const moonshot = rows.find((r) => r.name === "moonshot")
+    expect(moonshot).toBeDefined()
+    expect(moonshot!.connected).toBe(false)
+    expect(moonshot!.modelCount).toBe(0)
+  })
+
+  test("without a catalog, providers are still grouped (connectable=false)", () => {
+    const rows = groupProviders(models)
+    const names = rows.map((r) => r.name)
+    expect(names).toEqual(["anthropic", "custom-gw", "openai", "ollama"])
+    for (const r of rows) expect(r.connectable).toBe(false)
   })
 })

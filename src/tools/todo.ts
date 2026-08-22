@@ -1,5 +1,6 @@
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
+import { todosFile } from "../session/paths.ts"
 
 export type TodoStatus = "pending" | "in_progress" | "completed"
 
@@ -16,9 +17,55 @@ export function getTodos(sessionID: string): Todo[] {
   return lists.get(sessionID) ?? []
 }
 
-/** Drop a session's todos (session end / fork). */
+/**
+ * Drop a session's todos (session end / fork).
+ * Also removes the persisted file so a forked session starts clean.
+ */
 export function forgetTodos(sessionID: string): void {
   lists.delete(sessionID)
+}
+
+/**
+ * Persist a session's todo list to disk so it survives a resume.
+ * Best-effort: never throws — a write failure means todos are not
+ * remembered, not that the session dies.
+ */
+async function persistTodos(directory: string, sessionID: string, todos: Todo[]): Promise<void> {
+  const file = todosFile(directory, sessionID)
+  try {
+    await Bun.write(file, `${JSON.stringify({ todos }, null, 2)}\n`)
+  } catch {
+    // directory may not exist yet; ignore
+  }
+}
+
+/**
+ * Lazily load a session's todo list from disk on first access after a resume.
+ * If the file does not exist or is corrupt, returns an empty list. Never
+ * throws.
+ */
+export async function loadTodos(directory: string, sessionID: string): Promise<Todo[]> {
+  // Already in memory — nothing to load.
+  if (lists.has(sessionID)) return lists.get(sessionID) ?? []
+  const file = Bun.file(todosFile(directory, sessionID))
+  if (!(await file.exists())) return []
+  try {
+    const parsed = (await file.json()) as { todos?: unknown }
+    const todos = parsed.todos
+    if (!Array.isArray(todos)) return []
+    const valid: Todo[] = []
+    for (const item of todos) {
+      if (typeof item !== "object" || item === null) continue
+      const t = item as { id?: unknown; content?: unknown; status?: unknown }
+      if (typeof t.id !== "string" || typeof t.content !== "string") continue
+      if (t.status !== "pending" && t.status !== "in_progress" && t.status !== "completed") continue
+      valid.push({ id: t.id, content: t.content, status: t.status })
+    }
+    lists.set(sessionID, valid)
+    return valid
+  } catch {
+    return []
+  }
 }
 
 const STATUS_MARK: Record<TodoStatus, string> = {
@@ -71,7 +118,8 @@ Usage:
   blocked, leave it in progress and add a new item describing what is needed.
 - Keep content short and concrete, phrased as the work to do.
 - Write the list BEFORE starting the work, then update it as you go. A list
-  sent only at the end of a task tells the user nothing while it matters.`,
+  sent only at the end of a task tells the user nothing while it matters.
+- The list is persisted to disk and survives a session resume.`,
   parameters: writeParameters,
   async execute(args, ctx): Promise<ToolResult> {
     const todos: Todo[] = args.todos.map((todo, index) => ({
@@ -81,6 +129,7 @@ Usage:
     }))
 
     lists.set(ctx.sessionID, todos)
+    await persistTodos(ctx.cwd, ctx.sessionID, todos)
 
     const active = todos.filter((todo) => todo.status === "in_progress").length
     const warning =
@@ -107,9 +156,14 @@ export const todoReadTool: Tool<ReadArgs> = {
 Usage:
 - Takes no arguments.
 - Use it to re-orient after a long stretch of work, or when you are unsure
-  what is still outstanding. It returns the same list todowrite last stored.`,
+  what is still outstanding. It returns the same list todowrite last stored.
+- On a resumed session it loads the persisted list from disk on first call.`,
   parameters: readParameters,
   async execute(_args, ctx): Promise<ToolResult> {
+    // Lazily load from disk if not already in memory (e.g. after a resume).
+    if (!lists.has(ctx.sessionID)) {
+      await loadTodos(ctx.cwd, ctx.sessionID)
+    }
     const todos = getTodos(ctx.sessionID)
     return {
       title: summarize(todos),

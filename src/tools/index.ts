@@ -6,6 +6,7 @@ import { grepTool } from "./grep.ts"
 import { readTool } from "./read.ts"
 import { taskTool } from "./task.ts"
 import { todoReadTool, todoWriteTool } from "./todo.ts"
+import { webfetchTool } from "./webfetch.ts"
 import { writeTool } from "./write.ts"
 
 export { bashTool } from "./bash.ts"
@@ -14,8 +15,9 @@ export { globTool } from "./glob.ts"
 export { grepTool } from "./grep.ts"
 export { readTool } from "./read.ts"
 export { taskTool } from "./task.ts"
-export { todoReadTool, todoWriteTool, getTodos, forgetTodos } from "./todo.ts"
+export { todoReadTool, todoWriteTool, getTodos, forgetTodos, loadTodos } from "./todo.ts"
 export type { Todo, TodoStatus } from "./todo.ts"
+export { webfetchTool } from "./webfetch.ts"
 export { writeTool } from "./write.ts"
 export { forgetReads, hasRead, recordRead } from "./shared.ts"
 
@@ -36,5 +38,6 @@ export function allTools(): Tool[] {
     todoWriteTool,
     todoReadTool,
     taskTool,
+    webfetchTool,
   ]
 }

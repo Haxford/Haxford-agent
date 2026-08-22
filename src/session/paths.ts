@@ -45,6 +45,11 @@ export function sessionMetaFile(directory: string, sessionID: string): string {
   return path.join(sessionsDir(directory), `${sessionID}.meta.json`)
 }
 
+/** Path to a session's todo list: <sessionsDir>/<id>.todos.json */
+export function todosFile(directory: string, sessionID: string): string {
+  return path.join(sessionsDir(directory), `${sessionID}.todos.json`)
+}
+
 /** Ensure a directory exists (and parents), creating on demand. */
 export function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true })

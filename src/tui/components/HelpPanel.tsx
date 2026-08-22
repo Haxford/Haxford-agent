@@ -13,6 +13,7 @@ export interface CommandRow {
 export const COMMANDS: CommandRow[] = [
   { command: "/help", description: "show this help" },
   { command: "/model", description: "switch the active model" },
+  { command: "/connect", description: "connect or re-key a provider" },
   { command: "/sessions", description: "resume a previous session" },
   { command: "/compact", description: "compact the conversation now" },
   { command: "/init", description: "analyze codebase and create/improve AGENTS.md" },

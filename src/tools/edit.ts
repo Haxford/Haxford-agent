@@ -2,17 +2,78 @@ import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
 import { checkAbsolute, errorText, hasRead, recordRead } from "./shared.ts"
 
-const parameters = z.object({
-  filePath: z.string().describe("Absolute path of the file to edit."),
-  oldString: z.string().describe("Exact text to replace, including whitespace."),
-  newString: z.string().describe("Text to replace it with."),
+const editSchema = z.object({
+  oldText: z.string().describe("Exact text for one targeted replacement."),
+  newText: z.string().describe("Replacement text for this targeted edit."),
   replaceAll: z
     .boolean()
     .optional()
     .describe("Replace every occurrence instead of requiring a unique match."),
 })
 
+const parameters = z.object({
+  filePath: z.string().describe("Absolute path of the file to edit."),
+  edits: z
+    .array(editSchema)
+    .optional()
+    .describe(
+      "One or more targeted replacements. Each edit is matched against the " +
+        "original file, not incrementally. Do not include overlapping or " +
+        "nested edits.",
+    ),
+  oldString: z
+    .string()
+    .optional()
+    .describe("Exact text to replace (flat single-edit form)."),
+  newString: z
+    .string()
+    .optional()
+    .describe("Text to replace it with (flat single-edit form)."),
+  replaceAll: z
+    .boolean()
+    .optional()
+    .describe(
+      "Replace every occurrence instead of requiring a unique match " +
+        "(flat single-edit form).",
+    ),
+})
+
+type EditOp = {
+  oldString: string
+  newString: string
+  replaceAll?: boolean
+}
+
 type Args = z.infer<typeof parameters>
+
+/** Normalize the flat single-edit form into an edits array. */
+function normalizeEdits(args: Args): EditOp[] | string {
+  const flat: EditOp[] = []
+  if (args.oldString !== undefined || args.newString !== undefined) {
+    if (args.edits !== undefined) {
+      return "Error: pass either edits[] or oldString/newString, not both."
+    }
+    const oldS = args.oldString ?? ""
+    const newS = args.newString ?? ""
+    flat.push({
+      oldString: oldS,
+      newString: newS,
+      ...(args.replaceAll !== undefined ? { replaceAll: args.replaceAll } : {}),
+    })
+    return flat
+  }
+  if (args.edits === undefined) {
+    return "Error: no edits provided. Pass edits[] or oldString/newString."
+  }
+  if (args.edits.length === 0) {
+    return "Error: edits[] is empty. Provide at least one edit."
+  }
+  return args.edits.map((e) => ({
+    oldString: e.oldText,
+    newString: e.newText,
+    ...(e.replaceAll !== undefined ? { replaceAll: e.replaceAll } : {}),
+  }))
+}
 
 /** Count non-overlapping occurrences without building an array. */
 function countOccurrences(haystack: string, needle: string): number {
@@ -33,13 +94,94 @@ function lineOf(text: string, index: number): number {
   return line
 }
 
+/**
+ * Resolve a single edit into the spans it would replace on the ORIGINAL file.
+ *
+ * Returns [start, end] character offsets, or an error string. For a unique
+ * match the span is the single occurrence; for replaceAll it is every
+ * occurrence (returned as multiple spans).
+ */
+interface Span {
+  start: number
+  end: number
+  edit: EditOp
+}
+
+function resolveSpans(
+  content: string,
+  edit: EditOp,
+  label: string,
+): { spans: Span[]; error?: string } {
+  if (edit.oldString === "") {
+    return { spans: [], error: `${label}: oldString is empty.` }
+  }
+  if (edit.oldString === edit.newString) {
+    return { spans: [], error: `${label}: oldString and newString are identical.` }
+  }
+  const count = countOccurrences(content, edit.oldString)
+  if (count === 0) {
+    return {
+      spans: [],
+      error: `${label}: oldString was not found. The text must match exactly, including indentation and line breaks.`,
+    }
+  }
+  if (count > 1 && !edit.replaceAll) {
+    const first = lineOf(content, content.indexOf(edit.oldString))
+    return {
+      spans: [],
+      error: `${label}: found ${count} matches (first at line ${first}). Add surrounding context to make oldString unique, or pass replaceAll: true.`,
+    }
+  }
+  const spans: Span[] = []
+  let idx = content.indexOf(edit.oldString)
+  while (idx !== -1) {
+    spans.push({ start: idx, end: idx + edit.oldString.length, edit })
+    idx = content.indexOf(edit.oldString, idx + edit.oldString.length)
+  }
+  return { spans }
+}
+
+/** Check whether two spans overlap or nest. */
+function overlaps(a: Span, b: Span): boolean {
+  return a.start < b.end && b.start < a.end
+}
+
+/**
+ * Produce a unified-diff-style summary of the applied edits.
+ * Not a full diff algorithm — a compact per-edit report the model can read.
+ */
+function diffSummary(
+  content: string,
+  spans: Span[],
+): string {
+  const lines: string[] = []
+  for (const span of spans) {
+    const startLine = lineOf(content, span.start)
+    const oldText = content.slice(span.start, span.end)
+    const newText = span.edit.newString
+    const oldPreview = oldText.length > 80 ? `${oldText.slice(0, 77)}…` : oldText
+    const newPreview = newText.length > 80 ? `${newText.slice(0, 77)}…` : newText
+    lines.push(`  line ${startLine}: -${JSON.stringify(oldPreview)} +${JSON.stringify(newPreview)}`)
+  }
+  return lines.join("\n")
+}
+
 export const editTool: Tool<Args> = {
   id: "edit",
-  description: `Replace an exact string in a file.
+  description: `Replace exact strings in a file.
 
 Usage:
 - filePath MUST be an absolute path. Relative paths are rejected.
 - You MUST read the file before editing it.
+- Pass edits[] for one or more targeted replacements in a single call. Each
+  edits[].oldString is matched against the original file, not after earlier
+  edits are applied. Do not include overlapping or nested edits. If two
+  changes touch the same block or nearby lines, merge them into one edit
+  instead of emitting overlapping edits.
+- Keep edits[].oldString as small as possible while still being unique. Do
+  not pad with large unchanged regions.
+- The flat form (oldString/newString/replaceAll) still works for a single
+  replacement, but prefer edits[] for new code.
 - oldString must match the file EXACTLY — every space, tab, and newline. Copy
   it from the read output, but strip the line-number/tab prefix that read adds.
 - oldString must be unique in the file, or the edit is refused as ambiguous.
@@ -47,8 +189,6 @@ Usage:
   to change every occurrence deliberately.
 - oldString and newString must differ.
 - To create a new file use write; to delete text pass an empty newString.
-- Prefer making several independent edits to a file in parallel over many
-  sequential round trips.
 - The user is asked to approve this action before it takes effect, and may
   decline.`,
   parameters,
@@ -58,12 +198,11 @@ Usage:
 
     const path = args.filePath
 
-    if (args.oldString === args.newString) {
-      return {
-        title: `edit ${path}`,
-        output: "Error: oldString and newString are identical — nothing to change.",
-      }
+    const normalized = normalizeEdits(args)
+    if (typeof normalized === "string") {
+      return { title: `edit ${path}`, output: `Error: ${normalized}` }
     }
+    const edits = normalized
 
     try {
       const file = Bun.file(path)
@@ -84,42 +223,45 @@ Usage:
 
       const content = await file.text()
 
-      if (args.oldString === "") {
-        return {
-          title: `edit ${path}`,
-          output:
-            "Error: oldString is empty. Provide the exact text to replace, " +
-            "or use write to create/replace the whole file.",
+      // Resolve every edit against the ORIGINAL content. An edit that does
+      // not match, or is ambiguous, fails the whole call — all-or-nothing.
+      const allSpans: Span[] = []
+      for (let i = 0; i < edits.length; i++) {
+        const edit = edits[i]!
+        const label = edits.length === 1 ? "edit" : `edits[${i}]`
+        const { spans, error } = resolveSpans(content, edit, label)
+        if (error) {
+          return {
+            title: `edit ${path}`,
+            output: `Error: ${error}`,
+          }
+        }
+        allSpans.push(...spans)
+      }
+
+      // Reject overlapping or nested spans — they cannot both apply to the
+      // original file without one clobbering the other.
+      for (let i = 0; i < allSpans.length; i++) {
+        for (let j = i + 1; j < allSpans.length; j++) {
+          if (overlaps(allSpans[i]!, allSpans[j]!)) {
+            const a = allSpans[i]!
+            const b = allSpans[j]!
+            return {
+              title: `edit ${path}`,
+              output:
+                `Error: edits overlap or nest (lines ${lineOf(content, a.start)} and ${lineOf(content, b.start)}). ` +
+                `Merge them into a single edit covering the whole region.`,
+            }
+          }
         }
       }
 
-      const matches = countOccurrences(content, args.oldString)
-      if (matches === 0) {
-        return {
-          title: `edit ${path}`,
-          output:
-            `Error: oldString was not found in ${path}. The text must match ` +
-            `exactly, including indentation and line breaks. Re-read the file ` +
-            `and copy the target text from it (without the line-number prefix).`,
-        }
-      }
-      if (matches > 1 && !args.replaceAll) {
-        const first = lineOf(content, content.indexOf(args.oldString))
-        return {
-          title: `edit ${path}`,
-          output:
-            `Error: found ${matches} matches for oldString in ${path} ` +
-            `(first at line ${first}). The edit is ambiguous. Add surrounding ` +
-            `context to make oldString unique, or pass replaceAll: true to ` +
-            `change all ${matches} occurrences.`,
-          metadata: { path, matches },
-        }
-      }
+      const totalReplaced = allSpans.length
 
       const decision = await ctx.askPermission({
         tool: "edit",
         args: { filePath: path },
-        title: `Edit ${path}${args.replaceAll && matches > 1 ? ` (${matches} occurrences)` : ""}`,
+        title: `Edit ${path}${totalReplaced > 1 ? ` (${totalReplaced} occurrences)` : ""}`,
         sessionID: ctx.sessionID,
       })
       if (decision === "deny") {
@@ -129,19 +271,29 @@ Usage:
         }
       }
 
-      const updated = args.replaceAll
-        ? content.split(args.oldString).join(args.newString)
-        : content.replace(args.oldString, args.newString)
+      // Apply all spans to the original content in a single pass, building
+      // the new string by slicing between spans and inserting newStrings.
+      // Spans are sorted by start offset; overlaps were already rejected.
+      allSpans.sort((a, b) => a.start - b.start)
+      const pieces: string[] = []
+      let cursor = 0
+      for (const span of allSpans) {
+        pieces.push(content.slice(cursor, span.start))
+        pieces.push(span.edit.newString)
+        cursor = span.end
+      }
+      pieces.push(content.slice(cursor))
+      const updated = pieces.join("")
 
       await Bun.write(path, updated)
       recordRead(ctx.sessionID, path)
 
-      const replaced = args.replaceAll ? matches : 1
-      const line = lineOf(content, content.indexOf(args.oldString))
+      const diff = diffSummary(content, allSpans)
       return {
         title: `Edited ${path}`,
-        output: `Replaced ${replaced} occurrence(s) in ${path} (first at line ${line}).`,
-        metadata: { path, replaced, line },
+        output:
+          `Replaced ${totalReplaced} occurrence(s) in ${path}.\n${diff}`,
+        metadata: { path, replaced: totalReplaced, edits: edits.length },
       }
     } catch (error) {
       return {

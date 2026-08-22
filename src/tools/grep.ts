@@ -1,7 +1,7 @@
 import { isAbsolute, join, resolve } from "node:path"
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
-import { errorText, isNoisePath, looksBinary } from "./shared.ts"
+import { errorText, isIgnored, looksBinary, readGitignores } from "./shared.ts"
 
 const LIMIT = 100
 const MAX_LINE_CHARS = 500
@@ -127,11 +127,15 @@ async function scanFiles(
   const pattern = includeToGlob(include)
   const glob = new Bun.Glob(pattern)
   const matches: Match[] = []
+  const ignorePatterns = await readGitignores(root)
+  const alwaysIgnore = [".git", "node_modules"]
 
   for await (const entry of glob.scan({ cwd: root, onlyFiles: true })) {
     if (signal.aborted) break
     if (matches.length >= limit) break
-    if (isNoisePath(entry, pattern)) continue
+    const segments = entry.split("/")
+    if (alwaysIgnore.some((dir) => segments.includes(dir))) continue
+    if (ignorePatterns.length > 0 && isIgnored(entry, ignorePatterns)) continue
 
     const path = join(root, entry)
     try {
@@ -171,8 +175,9 @@ Usage:
 - At most ${LIMIT} matches are returned by default; the output says so when it
   truncates and tells you the limit to pass for more. Prefer tightening the
   pattern or the include filter over raising the limit.
-- Binary files, .git, and node_modules are skipped. Where ripgrep is
-  available it is used, so .gitignore'd files are skipped too.
+- Binary files, .git, and node_modules are skipped. .gitignore'd files are
+  skipped — where ripgrep is available it respects .gitignore natively; the
+  fallback scan reads the nearest .gitignore files.
 - Use this to search contents. To find files by NAME use glob.
 - Run several greps in parallel when you are exploring a codebase.`,
   parameters,

@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 
 /**
  * Files the model has read, per session. `write` (on an existing file) and
@@ -137,17 +137,171 @@ export function truncateTail(text: string, limits: TailLimits): TailTruncation {
   }
 }
 
-/** Directories that would otherwise flood glob/grep results. */
-const NOISE = [".git", "node_modules"]
+/**
+ * Parse a .gitignore file into a list of ignore patterns.
+ *
+ * Each pattern is { pattern, negate } — a negation starts with `!`. Lines
+ * that are blank or start with `#` are dropped. Trailing whitespace is
+ * stripped. This is a pragmatic subset of gitignore syntax: it handles the
+ * common patterns (directory, glob, negation) without the full spec.
+ */
+export interface IgnorePattern {
+  pattern: string
+  negate: boolean
+}
+
+export function parseGitignore(text: string): IgnorePattern[] {
+  const out: IgnorePattern[] = []
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim()
+    if (line === "" || line.startsWith("#")) continue
+    if (line.startsWith("!")) {
+      out.push({ pattern: line.slice(1), negate: true })
+    } else {
+      out.push({ pattern: line, negate: false })
+    }
+  }
+  return out
+}
 
 /**
- * Skip noisy directories unless the caller's pattern explicitly names them,
- * so `**\/node_modules/**` still works while `**\/*.ts` stays useful.
+ * Read .gitignore files walking up from `root` to the filesystem root,
+ * accumulating all ignore patterns with the closest .gitignore first.
+ * Returns an empty array when no .gitignore is found. Never throws.
  */
-export function isNoisePath(path: string, pattern: string): boolean {
-  return NOISE.some(
-    (dir) => !pattern.includes(dir) && path.split("/").includes(dir),
-  )
+export async function readGitignores(root: string): Promise<IgnorePattern[]> {
+  const patterns: IgnorePattern[] = []
+  let dir = resolve(root)
+  const seen = new Set<string>()
+  while (true) {
+    const gitignore = join(dir, ".gitignore")
+    try {
+      const file = Bun.file(gitignore)
+      if (await file.exists()) {
+        const text = await file.text()
+        patterns.push(...parseGitignore(text))
+      }
+    } catch {
+      // unreadable — skip
+    }
+    seen.add(dir)
+    const parent = dirname(dir)
+    if (parent === dir || seen.has(parent)) break
+    dir = parent
+  }
+  return patterns
+}
+
+/**
+ * Convert a gitignore glob pattern to a RegExp.
+ *
+ * - `*` matches within a path segment (`[^/]*`)
+ * - `**` matches across segments (`.*`)
+ * - `?` matches one non-slash char
+ * - everything else is literal (escaped)
+ */
+function globToRegex(pattern: string): RegExp {
+  let regex = "^"
+  let i = 0
+  while (i < pattern.length) {
+    const c = pattern[i]
+    if (c === "*") {
+      if (pattern[i + 1] === "*") {
+        regex += ".*"
+        i += 2
+        if (pattern[i] === "/") i++
+      } else {
+        regex += "[^/]*"
+        i++
+      }
+    } else if (c === "?") {
+      regex += "[^/]"
+      i++
+    } else if (/[.+^${}()|[\]\\]/.test(c ?? "")) {
+      regex += "\\" + (c ?? "")
+      i++
+    } else {
+      regex += c ?? ""
+      i++
+    }
+  }
+  regex += "$"
+  try {
+    return new RegExp(regex)
+  } catch {
+    return /(?:)/
+  }
+}
+
+/**
+ * Match a relative path against a gitignore pattern.
+ *
+ * A gitignore pattern without a slash matches any path segment at any depth.
+ * A pattern with a slash is matched against the full relative path (anchored).
+ * A trailing slash means directory-only. A leading slash anchors to root.
+ */
+function gitignoreMatch(relativePath: string, pattern: string): boolean {
+  let p = pattern
+  const path = relativePath.replace(/\/$/, "")
+
+  // Trailing slash → the pattern targets a directory; match any path under it.
+  if (p.endsWith("/")) {
+    const dir = p.slice(0, -1)
+    if (dir.startsWith("/")) {
+      const anchored = dir.slice(1)
+      return path === anchored || path.startsWith(anchored + "/")
+    }
+    if (dir.includes("/")) {
+      const re = globToRegex(dir)
+      return re.test(path) || path.startsWith(dir + "/")
+    }
+    // Bare directory name → the path must be under a matching segment.
+    // `build` (no slash) should NOT match pattern `build/`, but
+    // `build/output.ts` SHOULD — the segment must be a prefix, not the leaf.
+    const segments = path.split("/")
+    for (let s = 0; s < segments.length - 1; s++) {
+      if (segments[s] === dir || globToRegex(dir).test(segments[s]!)) return true
+    }
+    return false
+  }
+
+  // Leading slash → anchored to root.
+  if (p.startsWith("/")) {
+    p = p.slice(1)
+    return globToRegex(p).test(path)
+  }
+
+  // No slash → match any segment OR the full path.
+  if (!p.includes("/")) {
+    const re = globToRegex(p)
+    const segments = path.split("/")
+    if (segments.some((seg) => re.test(seg))) return true
+    return re.test(path)
+  }
+
+  // Pattern with a slash → match against full path (possibly at any depth).
+  const re = globToRegex(p)
+  if (re.test(path)) return true
+  // Also match if any sub-path starting at a segment boundary matches.
+  const segments = path.split("/")
+  for (let start = 1; start < segments.length; start++) {
+    if (re.test(segments.slice(start).join("/"))) return true
+  }
+  return false
+}
+
+/**
+ * Check whether a relative path should be ignored given a set of gitignore
+ * patterns. Later patterns override earlier ones (a negation un-ignores).
+ */
+export function isIgnored(relativePath: string, patterns: IgnorePattern[]): boolean {
+  let ignored = false
+  for (const { pattern, negate } of patterns) {
+    if (gitignoreMatch(relativePath, pattern)) {
+      ignored = !negate
+    }
+  }
+  return ignored
 }
 
 export function errorText(error: unknown): string {

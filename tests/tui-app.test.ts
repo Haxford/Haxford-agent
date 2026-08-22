@@ -6,6 +6,8 @@ import type { SessionInfo } from "../src/types/session.ts"
 import { HaxfordApp, HELP_TEXT, isExactCommandMatch, parseSlashCommand, type SlashAction } from "../src/tui/app.tsx"
 import { createApprovalBridge } from "../src/tui/approval.ts"
 import { Composer, type ComposerHandle } from "../src/tui/components/Composer.tsx"
+import { ConnectDialog } from "../src/tui/components/ConnectDialog.tsx"
+import { ModelPicker, type ProviderCatalogEntry } from "../src/tui/components/ModelPicker.tsx"
 import { SlashAutocomplete } from "../src/tui/components/SlashAutocomplete.tsx"
 import { COMMANDS } from "../src/tui/components/HelpPanel.tsx"
 import { createTuiStore } from "../src/tui/store.ts"
@@ -369,6 +371,183 @@ describe("autocomplete submission safety", () => {
     // The imperative set() reseeds the uncontrolled TextInput and reports the
     // new value through onValueChange - this is what makes completion work.
     expect(onChange.at(-1)).toBe("/mode ")
+    inst.unmount()
+  })
+})
+
+describe("ModelPicker two-level render", () => {
+  // Level 1: connected providers listed; the active model's provider
+  // is connected; unconnected catalog providers are dimmed.
+  const models = [
+    { spec: "anthropic/claude-sonnet-5", available: true },
+    { spec: "anthropic/claude-opus-5", available: true },
+    { spec: "openai/gpt-5", available: false },
+    { spec: "ollama/llama3.3", available: false },
+  ]
+  const catalog: ProviderCatalogEntry[] = [
+    { name: "anthropic", connected: true },
+    { name: "openai", connected: false },
+    { name: "ollama", connected: false },
+    { name: "moonshot", connected: false },
+  ]
+
+  test("level-1 lists connected providers first with a connect row at the bottom", () => {
+    const onProviderConnect = () => {}
+    const inst = render(
+      React.createElement(ModelPicker, {
+        models,
+        current: "anthropic/claude-sonnet-5",
+        onSelect: () => {},
+        onCancel: () => {},
+        providerCatalog: catalog,
+        onProviderConnect,
+      }),
+    )
+    const frame = inst.lastFrame() ?? ""
+    // Title and a connected provider.
+    expect(frame).toContain("switch model")
+    expect(frame).toContain("anthropic")
+    // A model count hint.
+    expect(frame).toContain("2 models")
+    // Unconnected catalog providers are present too.
+    expect(frame).toContain("openai")
+    expect(frame).toContain("unconnected")
+    // The connect row at the bottom.
+    expect(frame).toContain("+ connect a provider")
+    // Two-level nav hint in the footer.
+    expect(frame).toContain("esc back")
+    inst.unmount()
+  })
+
+  test("level-1 hides the connect row when no host hook is wired", () => {
+    const inst = render(
+      React.createElement(ModelPicker, {
+        models,
+        current: "anthropic/claude-sonnet-5",
+        onSelect: () => {},
+        onCancel: () => {},
+        providerCatalog: catalog,
+        // onProviderConnect omitted -> row hidden
+      }),
+    )
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).not.toContain("+ connect a provider")
+    inst.unmount()
+  })
+})
+
+describe("ConnectDialog masked input", () => {
+  const catalog: ProviderCatalogEntry[] = [
+    { name: "anthropic", connected: true },
+    { name: "openai", connected: false },
+    { name: "openrouter", connected: false },
+  ]
+
+  test("provider chooser lists unconnected providers first", () => {
+    const inst = render(
+      React.createElement(ConnectDialog, {
+        providerCatalog: catalog,
+        onConnect: () => {},
+        onCancel: () => {},
+      }),
+    )
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("connect a provider")
+    // Unconnected first.
+    const openaiIdx = frame.indexOf("openai")
+    const anthropicIdx = frame.indexOf("anthropic")
+    expect(openaiIdx).toBeGreaterThanOrEqual(0)
+    expect(anthropicIdx).toBeGreaterThanOrEqual(0)
+    expect(openaiIdx).toBeLessThan(anthropicIdx)
+    // Connected provider shows its status.
+    expect(frame).toContain("connected")
+    inst.unmount()
+  })
+
+  test("mask: typed key never echoes; asterisks track length", async () => {
+    const calls: { provider: string; key: string; url?: string }[] = []
+    const inst = render(
+      React.createElement(ConnectDialog, {
+        providerCatalog: catalog,
+        onConnect: (provider, apiKey, baseURL?) => calls.push({ provider, key: apiKey, url: baseURL }),
+        onCancel: () => {},
+      }),
+    )
+    // Select the first unconnected provider (openai, index 0).
+    inst.stdin.write("\r") // enter
+    await new Promise((r) => setTimeout(r, 50))
+    let frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("connect openai")
+    expect(frame).toContain("paste your API key")
+    // The real key must never appear in the frame; only asterisks.
+    inst.stdin.write("sk-secret")
+    await new Promise((r) => setTimeout(r, 50))
+    frame = inst.lastFrame() ?? ""
+    expect(frame).not.toContain("sk-secret")
+    expect(frame).toContain("*********") // 9 asterisks for "sk-secret"
+    // Tab to the base URL field. openai has no default, so the placeholder stays.
+    inst.stdin.write("\t")
+    await new Promise((r) => setTimeout(r, 50))
+    frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("url")
+    // Enter saves — the host sees the un-masked key.
+    inst.stdin.write("\r")
+    await new Promise((r) => setTimeout(r, 50))
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.provider).toBe("openai")
+    expect(calls[0]!.key).toBe("sk-secret")
+    expect(calls[0]!.url).toBeUndefined()
+    inst.unmount()
+  })
+
+  test("base URL pre-fills with the provider default", async () => {
+    const calls: { provider: string; key: string; url?: string }[] = []
+    const inst = render(
+      React.createElement(ConnectDialog, {
+        providerCatalog: catalog,
+        onConnect: (provider, apiKey, baseURL?) => calls.push({ provider, key: apiKey, url: baseURL }),
+        onCancel: () => {},
+      }),
+    )
+    // Sorted unconnected-first alphabetical: openai(0), openrouter(1), anthropic(2).
+    // Press down once to land on openrouter, then enter.
+    inst.stdin.write("\x1b[B") // down arrow
+    await new Promise((r) => setTimeout(r, 50))
+    inst.stdin.write("\r")
+    await new Promise((r) => setTimeout(r, 50))
+    let frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("connect openrouter")
+    inst.stdin.write("or-key")
+    await new Promise((r) => setTimeout(r, 50))
+    inst.stdin.write("\t")
+    await new Promise((r) => setTimeout(r, 50))
+    frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("https://openrouter.ai/api/v1")
+    inst.stdin.write("\r")
+    await new Promise((r) => setTimeout(r, 50))
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.provider).toBe("openrouter")
+    expect(calls[0]!.key).toBe("or-key")
+    expect(calls[0]!.url).toBe("https://openrouter.ai/api/v1")
+    inst.unmount()
+  })
+
+  test("Esc at the form returns to the provider chooser (not cancel)", async () => {
+    const cancels: number[] = []
+    const inst = render(
+      React.createElement(ConnectDialog, {
+        providerCatalog: catalog,
+        onConnect: () => {},
+        onCancel: () => cancels.push(1),
+      }),
+    )
+    inst.stdin.write("\r") // enter the form
+    await new Promise((r) => setTimeout(r, 50))
+    inst.stdin.write("\u001b") // esc -> back
+    await new Promise((r) => setTimeout(r, 50))
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("connect a provider")
+    expect(cancels).toHaveLength(0)
     inst.unmount()
   })
 })

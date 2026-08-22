@@ -1,7 +1,7 @@
 import { isAbsolute, join, resolve } from "node:path"
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
-import { errorText, isNoisePath } from "./shared.ts"
+import { errorText, isIgnored, readGitignores } from "./shared.ts"
 
 const LIMIT = 100
 
@@ -34,7 +34,9 @@ Usage:
 - At most ${LIMIT} results are returned by default; the output says so when it
   truncates and tells you the limit to pass for more. Prefer narrowing the
   pattern over raising the limit.
-- .git and node_modules are skipped unless your pattern names them.
+- .gitignore'd paths are skipped — the nearest .gitignore is read from the
+  search directory up. .git and node_modules are always skipped unless your
+  pattern names them.
 - Use this to find files by name. To search file CONTENTS use grep.
 - When you are exploring, run several globs in parallel in one step.`,
   parameters,
@@ -49,10 +51,17 @@ Usage:
     const root = args.path ? resolve(args.path) : ctx.cwd
 
     try {
+      const ignorePatterns = await readGitignores(root)
+      // Always ignore .git; node_modules unless the pattern names it.
+      const alwaysIgnore = [".git"]
+      if (!args.pattern.includes("node_modules")) alwaysIgnore.push("node_modules")
+
       const glob = new Bun.Glob(args.pattern)
       const found: string[] = []
       for await (const entry of glob.scan({ cwd: root, onlyFiles: true })) {
-        if (isNoisePath(entry, args.pattern)) continue
+        const segments = entry.split("/")
+        if (alwaysIgnore.some((dir) => segments.includes(dir))) continue
+        if (ignorePatterns.length > 0 && isIgnored(entry, ignorePatterns)) continue
         found.push(join(root, entry))
       }
 

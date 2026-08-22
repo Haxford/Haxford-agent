@@ -7,8 +7,9 @@ import type { PermissionRequest } from "../types/tool.ts"
 import type { ApprovalBridge } from "./approval.ts"
 import { Banner, shortCwd } from "./components/Banner.tsx"
 import { Composer, type ComposerHandle } from "./components/Composer.tsx"
+import { ConnectDialog } from "./components/ConnectDialog.tsx"
 import { HelpPanel, HELP_TEXT, COMMANDS, type CommandRow } from "./components/HelpPanel.tsx"
-import { ModelPicker } from "./components/ModelPicker.tsx"
+import { ModelPicker, type ModelOption, type ProviderCatalogEntry } from "./components/ModelPicker.tsx"
 import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { SessionPicker } from "./components/SessionPicker.tsx"
 import { SlashAutocomplete } from "./components/SlashAutocomplete.tsx"
@@ -64,6 +65,7 @@ export type SlashAction =
   | { kind: "model" }
   | { kind: "compact" }
   | { kind: "mode"; mode: "build" | "auto" | "plan" }
+  | { kind: "connect" }
   | { kind: "notice"; message: string }
   | { kind: "unknown"; command: string }
 
@@ -84,6 +86,7 @@ export function parseSlashCommand(
   if (cmd === "/model") return { kind: "model" }
   if (cmd === "/compact") return { kind: "compact" }
   if (cmd === "/init") return { kind: "prompt", text: INIT_PROMPT }
+  if (cmd === "/connect") return { kind: "connect" }
   if (cmd === "/mode") return { kind: "mode", mode: nextMode(mode) }
   if (cmd.startsWith("/mode ")) {
     const arg = cmd.slice("/mode ".length).trim()
@@ -94,7 +97,7 @@ export function parseSlashCommand(
 }
 
 /** Commands that take no argument and can be submitted immediately on accept. */
-export const NO_ARG_COMMANDS = new Set(["/help", "/sessions", "/compact", "/clear", "/exit"])
+export const NO_ARG_COMMANDS = new Set(["/help", "/sessions", "/compact", "/clear", "/exit", "/connect"])
 
 /** Whether a command token accepts an argument (so autocomplete only completes the token). */
 export function takesArg(command: string): boolean {
@@ -150,7 +153,9 @@ export interface HaxfordAppProps {
   model: string
   mode: "build" | "auto" | "plan"
   /** Known provider/model specs for the /model picker (string[] or rich entries). */
-  models: string[] | import("./components/ModelPicker.tsx").ModelOption[]
+  models: string[] | ModelOption[]
+  /** Known providers with their connection status, driving the /connect flow and the model picker's level-1. */
+  providerCatalog?: ProviderCatalogEntry[]
   /** Working directory, shown in the banner and status bar. Optional so unwired hosts still typecheck. */
   cwd?: string
   /**
@@ -167,6 +172,18 @@ export interface HaxfordAppProps {
   onAbort(): void
   /** Host selected a new model spec via /model picker. */
   onModelChange(spec: string): void
+  /**
+   * /connect — host persists a new provider credential (the dialog renders UI
+   * only). Optional so unwired hosts keep `/connect` harmless: it dispatches a
+   * "not wired in this host" notice instead of crashing.
+   */
+  onConnectProvider?: (provider: string, apiKey: string, baseURL?: string) => void
+  /**
+   * Called when the user selects the "+ connect a provider…" row in the
+   * /model picker's level-1. Alias for opening the connect flow; the host
+   * owns what actually happens (usually: open the same /connect dialog).
+   */
+  onProviderConnect?: (provider: string) => void
   /** /compact — host runs manual compaction over session history. Optional so a host that has not wired it yet still typechecks; defaults to a no-op that dispatches a notice. */
   onCompact?(): void
   /** /mode — host switches the permission mode (host owns rerender). */
@@ -204,6 +221,7 @@ interface UiFlags {
   showHelp: boolean
   showSessions: LoadState
   showModelPicker: boolean
+  showConnect: boolean
 }
 
 export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
@@ -213,11 +231,14 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     model,
     mode,
     models,
+    providerCatalog,
     cwd,
     contextLimit,
     onPrompt,
     onAbort,
     onModelChange,
+    onConnectProvider,
+    onProviderConnect,
     onCompact,
     onModeChange,
     onExit,
@@ -232,6 +253,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     showHelp: false,
     showSessions: { kind: "idle" },
     showModelPicker: false,
+    showConnect: false,
   })
 
   // Slash autocomplete: tracks the live composer value, matching commands, and
@@ -286,6 +308,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       else if (c === "d") bridge.resolve("deny")
       return
     }
+    // The /connect dialog is modal while open — it owns its own keystrokes.
+    if (ui.showConnect) return
     // Esc while the loop is running signals abort (host owns AbortController).
     // Read live status from the store to avoid any closure staleness.
     if (key.escape && store.getState().status === "running") {
@@ -294,20 +318,20 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     }
     // Escape closes any open overlay (help / sessions picker / model picker).
     if (key.escape && (ui.showHelp || ui.showSessions.kind !== "idle" || ui.showModelPicker)) {
-      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false }))
+      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: false }))
       return
     }
     // Tab in the empty-ish, idle, overlay-free composer cycles the permission
     // mode build -> auto -> plan -> build (opencode-style). The host owns the
     // actual mode state and rerenders. Skip when the autocomplete popup is up
     // (the Composer routes tab to the popup instead).
-    if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker) {
+    if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker && !ui.showConnect) {
       onModeChange(nextMode(mode))
     }
   })
 
   const resetOverlays = useCallback(
-    () => setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false })),
+    () => setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: false })),
     [],
   )
 
@@ -353,6 +377,16 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           onModeChange(action.mode)
           resetOverlays()
           return
+        case "connect":
+          // Without a host hook the command is harmless: it reports that the
+          // connect flow is not wired, so the user knows why nothing opened.
+          if (onConnectProvider === undefined && providerCatalog === undefined) {
+            store.dispatch({ type: "notice", message: "connect not wired in this host" })
+            resetOverlays()
+            return
+          }
+          setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: true }))
+          return
         case "notice":
           store.dispatch({ type: "notice", message: action.message })
           resetOverlays()
@@ -370,7 +404,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     running ||
     pending !== undefined ||
     ui.showSessions.kind !== "idle" ||
-    ui.showModelPicker
+    ui.showModelPicker ||
+    ui.showConnect
 
   const closeSessions = useCallback(() => {
     setUi((u) => ({ ...u, showSessions: { kind: "idle" } }))
@@ -394,6 +429,30 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       onModelChange(spec)
     },
     [onModelChange],
+  )
+
+  const closeConnect = useCallback(() => {
+    setUi((u) => ({ ...u, showConnect: false }))
+  }, [])
+
+  const submitConnect = useCallback(
+    (provider: string, apiKey: string, baseURL?: string) => {
+      setUi((u) => ({ ...u, showConnect: false }))
+      onConnectProvider?.(provider, apiKey, baseURL)
+    },
+    [onConnectProvider],
+  )
+
+  // The /model picker's "+ connect a provider…" row routes here. The host
+  // decides what to do; a common choice is to open the same /connect dialog,
+  // which the app already renders when `showConnect` is true. Without a host
+  // hook the row is hidden, so this never fires.
+  const handleProviderConnect = useCallback(
+    (_provider: string) => {
+      setUi((u) => ({ ...u, showModelPicker: false, showConnect: true }))
+      onProviderConnect?.(_provider)
+    },
+    [onProviderConnect],
   )
 
   // --- Slash autocomplete handlers ---
@@ -447,7 +506,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
   const showBanner =
     state.messages.length === 0 && state.notices.length === 0 && pending === undefined
   const overlay =
-    ui.showHelp || ui.showModelPicker || ui.showSessions.kind !== "idle" || pending !== undefined
+    ui.showHelp || ui.showModelPicker || ui.showConnect || ui.showSessions.kind !== "idle" || pending !== undefined
 
   return (
     <SpinnerProvider active={running}>
@@ -524,6 +583,18 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
               current={model}
               onSelect={selectModel}
               onCancel={closeModelPicker}
+              providerCatalog={providerCatalog}
+              onProviderConnect={handleProviderConnect}
+            />
+          </Box>
+        ) : null}
+
+        {ui.showConnect && providerCatalog !== undefined ? (
+          <Box marginTop={1}>
+            <ConnectDialog
+              providerCatalog={providerCatalog}
+              onConnect={submitConnect}
+              onCancel={closeConnect}
             />
           </Box>
         ) : null}

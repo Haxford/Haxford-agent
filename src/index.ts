@@ -13,7 +13,8 @@ import React from "react"
 
 import { compactConversation, runAgentLoop } from "./agent/loop.ts"
 import { contextLimit } from "./agent/context.ts"
-import { loadConfig } from "./config/index.ts"
+import { loadConfig, saveGlobalProviderCredential } from "./config/index.ts"
+import { loadProjectModel, saveProjectModel } from "./config/state.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
 import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels } from "./providers/index.ts"
 import {
@@ -178,7 +179,7 @@ async function runTui(
   warnings: string[],
 ): Promise<void> {
   let { session, history } = await openSession(cwd, args)
-  let model = args.model ?? config.model ?? defaultModelSpec()
+  let model = args.model ?? loadProjectModel(cwd) ?? config.model ?? defaultModelSpec()
 
   const bridge = createApprovalBridge()
   const store = createTuiStore(history)
@@ -287,7 +288,20 @@ async function runTui(
   const openrouterReady = curated.some(
     (m) => m.available && m.spec.startsWith("openrouter/"),
   )
+  // Providers connected mid-session via /connect land here.
+  const runtimeConnected = new Set(
+    curated.filter((m) => m.available).map((m) => m.spec.slice(0, m.spec.indexOf("/"))),
+  )
+  const allProviderNames = [
+    ...new Set([...curated, ...catalog].map((m) => m.spec.slice(0, m.spec.indexOf("/")))),
+  ].sort()
   const curatedSpecs = new Set([model, ...curated.map((m) => m.spec)])
+  const knownModelMaterials = {
+    curated,
+    bySpec,
+    openrouterReady: curated.some((m) => m.available && m.spec.startsWith("openrouter/")),
+    curatedSpecs,
+  }
   const knownModels: ModelOption[] = [
     ...[...curatedSpecs].map((spec) => {
       const known = curated.find((m) => m.spec === spec)
@@ -304,17 +318,61 @@ async function runTui(
 
   // `app` is assigned by the render call below; callbacks only fire after
   // that, so closing over it is safe.
-  const buildElement = (): React.ReactElement =>
-    React.createElement(HaxfordApp, {
+  const buildElement = (): React.ReactElement => {
+    // Recomputed per render: /connect changes availability at runtime.
+    const providerCatalog = allProviderNames
+      .map((name) => ({ name, connected: runtimeConnected.has(name) }))
+      .sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name))
+    const models: ModelOption[] = [
+      ...knownModelMaterials.curated.map((m) => ({
+        ...m,
+        available:
+          m.available ||
+          runtimeConnected.has(m.spec.slice(0, m.spec.indexOf("/"))),
+        ...(knownModelMaterials.bySpec.get(m.spec) ?? {}),
+      })),
+      ...catalog
+        .filter((c) => !knownModelMaterials.curatedSpecs.has(c.spec))
+        .map((c) => ({
+          ...c,
+          available:
+            knownModelMaterials.openrouterReady ||
+            runtimeConnected.has(c.spec.slice(0, c.spec.indexOf("/"))),
+        })),
+    ]
+    if (!models.some((m) => m.spec === model)) {
+      models.unshift({ spec: model, available: true })
+    }
+    return React.createElement(HaxfordApp, {
       store,
       bridge,
       model,
       mode,
       contextLimit: contextLimit(model),
-      models: knownModels,
+      models,
+      providerCatalog,
       onModelChange: (spec: string) => {
         model = spec
+        // Persist per-project so the choice survives restarts.
+        void saveProjectModel(cwd, spec)
         app.rerender(buildElement())
+      },
+      onConnectProvider: (provider, apiKey, baseURL) => {
+        void (async () => {
+          try {
+            await saveGlobalProviderCredential(provider, apiKey, baseURL)
+            if (!config.providers) config.providers = {}
+            config.providers[provider] = { apiKey, ...(baseURL ? { baseURL } : {}) }
+            runtimeConnected.add(provider)
+            store.dispatch({ type: "notice", message: `connected ${provider}` })
+            app.rerender(buildElement())
+          } catch (error) {
+            store.dispatch({
+              type: "error",
+              message: error instanceof Error ? error.message : String(error),
+            })
+          }
+        })()
       },
       onModeChange: (m) => {
         mode = m
@@ -351,6 +409,7 @@ async function runTui(
         })()
       },
     })
+  }
 
   const app = render(buildElement())
 

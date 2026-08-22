@@ -220,4 +220,5 @@ export {
   sessionFile as sessionFilePath,
   sessionMetaFile as sessionMetaPath,
   sessionsDir as sessionsDirPath,
+  todosFile as todosFilePath,
 } from "./paths.ts"

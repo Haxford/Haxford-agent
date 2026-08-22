@@ -208,3 +208,27 @@ export async function loadConfig(cwd: string): Promise<LoadedConfig> {
 
   return { config, projectInstructions, warnings }
 }
+
+/**
+ * Persist a provider credential to the global config file (never the project
+ * config - that risks accidental commits). The file is chmod 600 after write.
+ */
+export async function saveGlobalProviderCredential(
+  provider: string,
+  apiKey: string,
+  baseURL?: string,
+): Promise<void> {
+  const file = path.join(configDir(), "haxford.json")
+  const existing = await readJsonFile(file)
+  const providers: Record<string, { apiKey?: string; baseURL?: string }> = {
+    ...(existing.providers ?? {}),
+  }
+  providers[provider] = {
+    ...providers[provider],
+    apiKey,
+    ...(baseURL !== undefined && baseURL.trim() !== "" ? { baseURL } : {}),
+  }
+  await Bun.write(file, JSON.stringify({ ...existing, providers }, null, 2) + "\n")
+  const fs = await import("node:fs")
+  fs.chmodSync(file, 0o600)
+}

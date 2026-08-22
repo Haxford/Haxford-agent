@@ -25,7 +25,14 @@ const ALLOW_BY_DEFAULT = new Set([
 const MUTATING = new Set(["write", "edit"])
 
 /** Allowed outright in plan mode — they only look. */
-const PLAN_READONLY = new Set(["read", "glob", "grep", "todoread", "todowrite"])
+const PLAN_READONLY = new Set([
+  "read",
+  "glob",
+  "grep",
+  "todoread",
+  "todowrite",
+  "webfetch",
+])
 
 function toolDefault(tool: string): PermissionAction {
   return ALLOW_BY_DEFAULT.has(tool) ? "allow" : "ask"
@@ -485,7 +492,7 @@ export interface AskHandlerOptions {
  */
 function subjectOf(request: PermissionRequest): string {
   const args = request.args
-  for (const key of ["command", "filePath", "path"]) {
+  for (const key of ["command", "filePath", "path", "url"]) {
     const value = args[key]
     if (typeof value === "string") return value
   }

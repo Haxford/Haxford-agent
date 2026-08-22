@@ -235,8 +235,8 @@ const PROVIDERS: Record<string, ProviderDef> = {
     baseURL: "https://openrouter.ai/api/v1",
     api: "chat",
     headers: {
-      "HTTP-Referer": "https://your-app-url.com",
-      "X-Title": "YourAppName",
+      "HTTP-Referer": "https://haxford.dev/haxford-agent",
+      "X-Title": "Haxford Agent",
     },
     knownModels: [
       // flagship / frontier coding

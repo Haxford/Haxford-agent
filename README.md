@@ -1,6 +1,6 @@
 # haxford
 
-Single-process terminal AI coding agent with permission-gated tools and an Ink TUI. It assembles a system prompt with tool schemas, streams model output, executes tool calls in one process, and feeds results back until the model stops calling tools. Sessions persist as append-only JSONL so they resume and fork without rewrite.
+Single-process terminal AI coding agent that works across your whole codebase — reads, edits, and runs commands across many files per turn — with permission-gated tools and an Ink TUI. It assembles a system prompt with tool schemas, streams model output, executes tool calls in one process (no daemon), and feeds results back until the model stops calling tools. Sessions persist as append-only JSONL so they resume and fork without rewrite.
 
 - **One process** — no daemon, no language server, no background services.
 - **Bring-your-own-key** — eight built-in providers plus the live OpenRouter catalog.
