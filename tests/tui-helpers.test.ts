@@ -251,7 +251,7 @@ describe("Slash autocomplete: matchCommands", () => {
     expect(matchCommands("")).toEqual([])
   })
   test("exact / and short prefixes match all", () => {
-    expect(matchCommands("/").length).toBe(9)
+    expect(matchCommands("/").length).toBe(10)
     expect(matchCommands("/m").map((r) => r.command)).toEqual(["/model", "/mode"])
   })
   test("case-insensitive", () => {

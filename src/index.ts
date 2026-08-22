@@ -15,6 +15,7 @@ import { compactConversation, runAgentLoop } from "./agent/loop.ts"
 import { contextLimit } from "./agent/context.ts"
 import { loadConfig, saveGlobalProviderCredential } from "./config/index.ts"
 import { loadProjectModel, saveProjectModel } from "./config/state.ts"
+import { loadExtensibility, reloadExtensions, type ExtensibilityState } from "./extend/index.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
 import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels, refreshOpenRouterCatalog, verifyProviderKey } from "./providers/index.ts"
 import { APP_VERSION } from "./providers/attribution.ts"
@@ -123,6 +124,25 @@ function userMessage(sessionID: string, text: string): Message {
   }
 }
 
+/**
+ * Load skills, extensions and themes, and create EXTENDING.md on first run.
+ * Every failure below this line is a string, so the only way this fails is a
+ * programmer error — which is exactly what the catch guards against: startup
+ * must not depend on a plugin loading cleanly.
+ */
+async function initExtensions(themeName?: string): Promise<ExtensibilityState | undefined> {
+  try {
+    const state = await loadExtensibility({ themeName })
+    if (state.doc.created) process.stderr.write(`[extend] created ${state.doc.path}\n`)
+    for (const name of state.extensions) process.stderr.write(`[extend] loaded ${name}\n`)
+    for (const w of state.warnings) process.stderr.write(`[extend] ${w}\n`)
+    return state
+  } catch (error) {
+    process.stderr.write(`[extend] ${error instanceof Error ? error.message : String(error)}\n`)
+    return undefined
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Print (non-interactive) mode                                                */
 /* -------------------------------------------------------------------------- */
@@ -185,6 +205,7 @@ async function runTui(
   config: HaxfordConfig,
   projectInstructions: string | undefined,
   warnings: string[],
+  themeName?: string,
 ): Promise<void> {
   let { session, history } = await openSession(cwd, args)
   let model = args.model ?? loadProjectModel(cwd) ?? config.model ?? defaultModelSpec()
@@ -278,6 +299,25 @@ async function runTui(
         history = [summary, ...history.slice(-2)]
         store.reset(history)
         store.dispatch({ type: "notice", message: "context compacted" })
+      } catch (error) {
+        store.dispatch({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })()
+  }
+
+  // /reload — rescan all three extension directories. The system prompt reads
+  // the skill index live from the extend module, so new skills are advertised
+  // from the very next turn without any further wiring.
+  const onReload = (): void => {
+    if (running) return
+    void (async () => {
+      try {
+        const state = await reloadExtensions({ themeName })
+        const n = state.extensions.length
+        store.setHint(`reloaded ${n} extension${n === 1 ? "" : "s"}`)
       } catch (error) {
         store.dispatch({
           type: "error",
@@ -409,6 +449,7 @@ async function runTui(
         bridge.cancel()
       },
       onCompact,
+      onReload,
       onPrompt,
       onExit: () => {
         bridge.cancel()
@@ -462,9 +503,13 @@ async function main(): Promise<void> {
   }
 
   const cwd = process.cwd()
-  const { config, projectInstructions, warnings } = await loadConfig(cwd)
+  const { config, projectInstructions, warnings, theme } = await loadConfig(cwd)
 
   for (const w of warnings) process.stderr.write(`[security] ${w}\n`)
+
+  // Skills/extensions/themes before either mode: the system prompt reads the
+  // skill index from this load. Failures are strings — see initExtensions.
+  const extensions = await initExtensions(theme)
 
   if (args.print) {
     if (!args.prompt) {
@@ -478,7 +523,10 @@ async function main(): Promise<void> {
     process.stderr.write("interactive mode requires a TTY; use -p for print mode\n")
     process.exit(2)
   }
-  await runTui(cwd, args, config, projectInstructions, warnings)
+  await runTui(cwd, args, config, projectInstructions, [
+    ...warnings,
+    ...(extensions?.warnings ?? []),
+  ], theme)
 }
 
 main().catch((error) => {

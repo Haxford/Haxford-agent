@@ -119,6 +119,7 @@ export type SlashAction =
   | { kind: "sessions" }
   | { kind: "model" }
   | { kind: "compact" }
+  | { kind: "reload" }
   | { kind: "mode"; mode: "build" | "auto" | "plan" }
   | { kind: "connect" }
   | { kind: "notice"; message: string }
@@ -140,6 +141,7 @@ export function parseSlashCommand(
   if (cmd === "/sessions") return { kind: "sessions" }
   if (cmd === "/model") return { kind: "model" }
   if (cmd === "/compact") return { kind: "compact" }
+  if (cmd === "/reload") return { kind: "reload" }
   if (cmd === "/init") return { kind: "prompt", text: INIT_PROMPT }
   if (cmd === "/connect") return { kind: "connect" }
   if (cmd === "/mode") return { kind: "mode", mode: nextMode(mode) }
@@ -152,7 +154,7 @@ export function parseSlashCommand(
 }
 
 /** Commands that take no argument and can be submitted immediately on accept. */
-export const NO_ARG_COMMANDS = new Set(["/help", "/sessions", "/compact", "/clear", "/exit", "/connect"])
+export const NO_ARG_COMMANDS = new Set(["/help", "/sessions", "/compact", "/reload", "/clear", "/exit", "/connect"])
 
 /** Whether a command token accepts an argument (so autocomplete only completes the token). */
 export function takesArg(command: string): boolean {
@@ -272,6 +274,12 @@ export interface HaxfordAppProps {
   onProviderConnect?: (provider: string) => void
   /** /compact — host runs manual compaction over session history. Optional so a host that has not wired it yet still typechecks; defaults to a no-op that dispatches a notice. */
   onCompact?(): void
+  /**
+   * /reload — host rescans skills, extensions and themes. Optional so an
+   * unwired host keeps `/reload` harmless: it dispatches a "not wired in this
+   * host" notice instead of crashing.
+   */
+  onReload?(): void
   /** /mode — host switches the permission mode (host owns rerender). */
   onModeChange(mode: "build" | "auto" | "plan"): void
   /** /exit or ctrl+c on empty composer */
@@ -327,6 +335,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     verifyProviderKey,
     onProviderConnect,
     onCompact,
+    onReload,
     onModeChange,
     onExit,
     onNewSession,
@@ -553,6 +562,16 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           compact()
           resetOverlays()
           return
+        case "reload":
+          // Host owns the rescan; it shows a transient hint when done. Fall
+          // back to a no-op notice so the command is safe even before the
+          // host wires it.
+          const reload = onReload ?? (() => {
+            store.dispatch({ type: "notice", message: "reload not wired in this host" })
+          })
+          reload()
+          resetOverlays()
+          return
         case "mode":
           // Transient hint only — see changeMode. Nothing reaches the transcript.
           changeMode(action.mode)
@@ -582,7 +601,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           return
       }
     },
-    [changeMode, mode, onAbort, onCompact, onConnectProvider, onExit, onNewSession, onPrompt, pending, providerCatalog, resetOverlays, showHint, store],
+    [changeMode, mode, onAbort, onCompact, onConnectProvider, onExit, onNewSession, onPrompt, onReload, pending, providerCatalog, resetOverlays, showHint, store],
   )
 
   const composerDisabled =

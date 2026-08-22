@@ -22,7 +22,8 @@ import {
   type ExtensionCommand,
 } from "./registry.ts"
 import { clearSkills, scanSkills, type SkillSummary } from "./skills.ts"
-import { activeThemeName, loadTheme, type LoadedTheme } from "./themes.ts"
+import { activeThemeName, DEFAULT_THEME_NAME, loadTheme, type LoadedTheme } from "./themes.ts"
+import { dark, type Theme } from "../tui/theme.ts"
 
 export interface ExtensibilityOptions {
   /**
@@ -62,9 +63,32 @@ async function seedLayout(): Promise<void> {
   )
 }
 
+/**
+ * The theme resolved by the most recent load/reload, kept here so a host that
+ * wants to hand the token map to the TUI does not have to thread
+ * `ExtensibilityState.theme` through its own plumbing. Before any load this is
+ * the built-in dark theme.
+ */
+let resolved: LoadedTheme = {
+  name: DEFAULT_THEME_NAME,
+  theme: { ...dark },
+  warnings: [],
+}
+
+/** The last resolved theme; defaults until `loadExtensibility` has run. */
+export function resolvedTheme(): LoadedTheme {
+  return resolved
+}
+
 /** The shared scan behind both load and reload. */
 async function scanAll(opts: ExtensibilityOptions): Promise<ExtensibilityState> {
   const registry = extensionRegistry()
+  // Dispose-first, unconditionally: whether this is a startup retry or a
+  // /reload, rescanning over live registrations would double-register every
+  // command and tool in the directory. Reserved names survive the clear.
+  registry.clear()
+  clearSkills()
+
   // Reserved every time: built-in tool ids are cheap to derive and a caller
   // that forgot would let an extension shadow `bash`.
   registry.reserve({ toolIds: builtinToolIds() })
@@ -85,6 +109,7 @@ async function scanAll(opts: ExtensibilityOptions): Promise<ExtensibilityState> 
 
   const theme = await loadTheme(activeThemeName(opts.themeName))
   warnings.push(...theme.warnings)
+  resolved = { name: theme.name, theme: theme.theme, warnings: [] }
 
   // Registration-time rejections (bad tool shape, name collisions) land in the
   // registry rather than in the loader's result, so collect them last.
@@ -129,6 +154,8 @@ export async function loadExtensibility(
 export async function reloadExtensions(
   opts: ExtensibilityOptions = {},
 ): Promise<ExtensibilityState> {
+  // `scanAll` disposes first; the explicit clear here keeps the documented
+  // guarantee local — old registrations die even if the scan changes.
   extensionRegistry().clear()
   clearSkills()
   return await scanAll(opts)
@@ -180,6 +207,7 @@ export {
   DEFAULT_THEME_NAME,
   listThemes,
   loadTheme,
+  THEME_ENV,
   THEME_TOKENS,
   type LoadedTheme,
 } from "./themes.ts"
