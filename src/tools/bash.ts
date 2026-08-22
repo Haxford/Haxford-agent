@@ -168,7 +168,10 @@ Usage:
       }
 
       const duration = Date.now() - started
-      const combined = chunks.join("")
+      // A trailing newline ends the last line rather than opening a new one,
+      // so stripping trailing newlines keeps line counts honest while giving
+      // the model clean output instead of a dangling blank line.
+      const combined = chunks.join("").replace(/[\r\n]+$/, "")
       const tail = truncateTail(combined, {
         maxChars: MAX_OUTPUT_CHARS,
         maxLines: MAX_OUTPUT_LINES,
