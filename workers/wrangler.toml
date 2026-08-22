@@ -7,5 +7,5 @@ compatibility_date = "2025-08-22"
 # Route: haxford.dev/* traffic goes to this Worker
 # (DNS is already proxied through Cloudflare, so this just works)
 routes = [
-  { pattern = "haxford.dev/*", zone_id = "<YOUR_ZONE_ID>" },
+  { pattern = "haxford.dev/*", zone_id = "fe6412550b3ed282161fd47d62871377" },
 ]
