@@ -1,4 +1,5 @@
-node_modules/
 dist/
 haxford
+.haxford/settings.local.json
 *.log
+node_modules/
