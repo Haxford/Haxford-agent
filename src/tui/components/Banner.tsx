@@ -20,7 +20,7 @@ import { theme } from "../theme.ts"
  */
 
 /** The package version, shown in the header. Kept in step with package.json. */
-export const VERSION = "0.1.0"
+export const VERSION = "0.2.0"
 
 /** Content rows inside the border: title, greeting, blank, model, cwd. */
 export const BANNER_CONTENT_LINES = 5
