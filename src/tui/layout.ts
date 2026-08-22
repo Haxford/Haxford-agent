@@ -92,6 +92,19 @@ export function estimateTranscriptLines(messages: Message[], width: number): num
   return total
 }
 
+/** Most queued prompts shown as their own stacked line before a count hint takes over. */
+export const MAX_QUEUE_LINES_SHOWN = 3
+
+/**
+ * Rows the queued-prompts display occupies above the composer: up to
+ * `MAX_QUEUE_LINES_SHOWN` one-liners, plus one more line for the "+N more"
+ * count hint once the queue is deeper than that. Zero when nothing is queued.
+ */
+export function queueDisplayLines(queueLength: number): number {
+  if (queueLength <= 0) return 0
+  return Math.min(queueLength, MAX_QUEUE_LINES_SHOWN) + (queueLength > MAX_QUEUE_LINES_SHOWN ? 1 : 0)
+}
+
 /** The pieces of the frame that compete for vertical space. */
 export interface PinInput {
   /** Terminal height in rows. */

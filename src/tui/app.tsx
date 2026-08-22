@@ -19,9 +19,11 @@ import { MessageView, Transcript } from "./components/Transcript.tsx"
 import { useTerminalSize } from "./hooks.ts"
 import {
   FOOTER_LINES,
+  MAX_QUEUE_LINES_SHOWN,
   bottomPadding,
   composerHeight,
   estimateTranscriptLines,
+  queueDisplayLines,
 } from "./layout.ts"
 import { probeBranch } from "./git.ts"
 import { synchronizedStdout } from "./raw.ts"
@@ -617,8 +619,11 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     [changeMode, mode, onAbort, onCompact, onConnectProvider, onExit, onNewSession, onPrompt, onReload, pending, providerCatalog, resetOverlays, showHint, store],
   )
 
+  // The composer stays live while a run is in flight: submitting there
+  // enqueues (see onPrompt's host-side reroute) instead of being dropped, so
+  // `running` is deliberately NOT in this list. Only modal surfaces disable
+  // typing — a permission dialog or picker owns the keyboard outright.
   const composerDisabled =
-    running ||
     pending !== undefined ||
     ui.showSessions.kind !== "idle" ||
     ui.showModelPicker ||
@@ -721,15 +726,15 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
   const composerPlaceholder = composerDisabled
     ? pending !== undefined
       ? "awaiting approval…"
-      : running
-        ? "agent running…"
-        : // An overlay owns the keyboard, but the agent is idle. Saying
-          // "agent running…" here was a plain lie, and it made a stuck-looking
-          // picker read as a stuck-looking run.
-          "esc to close"
-    : mode === "plan"
-      ? "plan mode — read-only research; edits require approval"
-      : "ask anything, or / for commands"
+      : // An overlay owns the keyboard, but the agent is idle. Saying
+        // "agent running…" here was a plain lie, and it made a stuck-looking
+        // picker read as a stuck-looking run.
+        "esc to close"
+    : running
+      ? "queued until the current run finishes…"
+      : mode === "plan"
+        ? "plan mode — read-only research; edits require approval"
+        : "ask anything, or / for commands"
 
   // Ink's <Static> prints settled messages once and never re-renders them, so
   // streaming costs one message's worth of diffing instead of the whole
@@ -797,7 +802,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         transcript:
           transcriptLines +
           (running ? 1 : 0) +
-          (activeHint !== undefined ? 1 : 0),
+          (activeHint !== undefined ? 1 : 0) +
+          queueDisplayLines(state.queue.length),
       })
 
   return (
@@ -941,6 +947,22 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           </Box>
         ) : null}
 
+        {/* Prompts submitted while a run is in flight, queued FIFO above the
+            input: a dim stacked preview of what's waiting, oldest first, so
+            queuing something never feels like it vanished. Past the first
+            few, a count hint stands in rather than the input growing without
+            bound. */}
+        {state.queue.length > 0 ? (
+          <Box flexDirection="column" paddingLeft={2}>
+            {state.queue.slice(0, MAX_QUEUE_LINES_SHOWN).map((text, i) => (
+              <Text key={i} dimColor>{`⏎ ${text}`}</Text>
+            ))}
+            {state.queue.length > MAX_QUEUE_LINES_SHOWN ? (
+              <Text dimColor>{`+${state.queue.length - MAX_QUEUE_LINES_SHOWN} more queued`}</Text>
+            ) : null}
+          </Box>
+        ) : null}
+
         <Composer
           disabled={composerDisabled}
           mode={mode}
@@ -952,6 +974,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           onPopupNavigate={onPopupNavigate}
           onPopupAccept={onPopupAccept}
           onPopupDismiss={onPopupDismiss}
+          onPopQueued={() => store.popLastQueued()}
           autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
         />
 

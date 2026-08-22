@@ -68,29 +68,57 @@ export function collectSecretValues(config?: HaxfordConfig): string[] {
 
   // Also read keys from the opencode auth store so those values are masked
   // if they appear in captured output.
-  for (const provider of ["anthropic", "openai", "openrouter", "zai", "moonshot", "opencode"]) {
-    const key = readOpencodeKey(provider)
-    if (key) secrets.push(key)
-  }
+  secrets.push(...cachedAuthStoreKeys())
 
   return secrets
 }
 
-/** Read a key from opencode's auth store without throwing. */
-function readOpencodeKey(provider: string): string | undefined {
+/**
+ * Every api key in opencode's auth store.
+ *
+ * Reads the whole store rather than a fixed list of provider names: a key
+ * that is not redacted because we did not think to name its provider is
+ * exactly the leak this exists to stop, and the file is a flat map anyway.
+ */
+function readOpencodeKeys(): string[] {
   const authPath = Bun.env.OPENCODE_AUTH_PATH?.trim() || join(homedir(), ".local", "share", "opencode", "auth.json")
   try {
     const raw = readFileSync(authPath, "utf8")
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    const entry = parsed[provider]
-    if (typeof entry !== "object" || entry === null) return undefined
-    const { type, key } = entry as { type?: unknown; key?: unknown }
-    if (type !== "api" || typeof key !== "string") return undefined
-    const trimmed = key.trim()
-    return trimmed === "" ? undefined : trimmed
+    const keys: string[] = []
+    for (const entry of Object.values(parsed)) {
+      if (typeof entry !== "object" || entry === null) continue
+      const { key } = entry as { key?: unknown }
+      if (typeof key !== "string") continue
+      const trimmed = key.trim()
+      if (trimmed !== "") keys.push(trimmed)
+    }
+    return keys
   } catch {
-    return undefined
+    return []
   }
+}
+
+/**
+ * Auth-store keys, cached for the process.
+ *
+ * `redactSecrets` now runs on every tool result that could carry a key, and
+ * re-reading the store from disk each time made redaction cost a synchronous
+ * file read per call. Only the FILE read is cached — env vars and config are
+ * re-read every time, so a key exported mid-session is still masked. The
+ * store changes when the user connects a provider, which calls
+ * `invalidateSecretCache`.
+ */
+let cachedAuthKeys: string[] | undefined
+
+/** Drop the cached auth-store keys — call after writing a new credential. */
+export function invalidateSecretCache(): void {
+  cachedAuthKeys = undefined
+}
+
+function cachedAuthStoreKeys(): string[] {
+  if (cachedAuthKeys === undefined) cachedAuthKeys = readOpencodeKeys()
+  return cachedAuthKeys
 }
 
 /**

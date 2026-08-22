@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { resolveAgent, type NamedAgent } from "../agent/agents.ts"
 import { runAgentLoop, type ToolContextWithSubagent } from "../agent/loop.ts"
-import { createAskHandler } from "../permission/engine.ts"
+import { clampMode, createAskHandler } from "../permission/engine.ts"
 import type { Message, TextPart } from "../types/message.ts"
 import type { Tool, ToolResult } from "../types/tool.ts"
 import { truncateText } from "./shared.ts"
@@ -132,12 +132,18 @@ for work that depends on context only you have.`,
      * refuses instead of suspending on a UI bridge that the parent's own tool
      * call is currently occupying (which would deadlock).
      */
+    /**
+     * A named agent may only make the posture STRICTER, never laxer. Opting
+     * into plan mode for a read-only reviewer is the feature; a checked-in
+     * `mode: auto` promoting a plan-mode session into unattended writes is
+     * the hole it would otherwise open, since `<cwd>/.haxford/agents` ships
+     * with the repository and the model chooses which agent to spawn.
+     */
+    const subMode = clampMode(named?.mode, sub.mode)
+
     const askPermission = createAskHandler({
       ...(sub.config?.permission ? { rules: sub.config.permission } : {}),
-      // The named agent's own posture wins when declared: the author of the
-      // agent file opted into it deliberately (e.g. a read-only reviewer in
-      // plan mode). Without one, the parent's posture applies.
-      mode: named?.mode ?? sub.mode,
+      mode: subMode,
       onAsk: () => "deny",
     })
 
@@ -160,7 +166,7 @@ for work that depends on context only you have.`,
         config: { ...(sub.config ?? {}), maxTurns: SUBAGENT_MAX_TURNS },
         abort: ctx.abort,
         askPermission,
-        mode: named?.mode ?? sub.mode,
+        mode: subMode,
         ...(named?.instructions ? { agentInstructions: named.instructions } : {}),
         ...(sub.retry ? { retry: sub.retry } : {}),
       })

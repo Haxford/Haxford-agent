@@ -92,7 +92,12 @@ export function parseFrontmatterFields(head: string): Record<string, string> {
   if (!text.startsWith("---")) return {}
 
   const lines = text.split("\n")
-  const out: Record<string, string> = {}
+  // Null-prototype: keys come from a file on disk, and `out[key]` on a plain
+  // object answers "constructor" or "toString" with something inherited — so
+  // the `out[key] === undefined` guard below silently drops those fields, and
+  // a consumer reading one back gets a function where a string was promised.
+  const out: Record<string, string> = Object.create(null) as Record<string, string>
+
 
   // Skip the opening delimiter; stop at the closing one, or at the end of
   // whatever slice of the file we were handed.

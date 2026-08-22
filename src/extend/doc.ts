@@ -63,6 +63,22 @@ A file in \`~/.haxford/extensions/\` that default-exports a function. Bun runs
 TypeScript directly, so \`.ts\` needs no compilation. Files load in **filename
 order** — prefix with \`10-\`, \`20-\` if one must run before another.
 
+> **An extension is code you are choosing to run.** haxford imports every file
+> in this directory at startup, in the same process, with your user's full
+> privileges — your filesystem, your network, your environment. There is no
+> sandbox and no permission prompt around an extension itself; the permission
+> engine gates what the *model* asks for, not what your own extension code
+> does. Treat adding one exactly as you would treat \`curl … | sh\`: read it
+> first, and only install extensions you trust. A broken extension is
+> contained (an import that throws, a hook that fails, or a bad registration
+> is reported as a warning and skipped, and the session continues) — a
+> *malicious* one is not.
+>
+> haxford never passes provider API keys to an extension: the API object below
+> is the entire surface, and the credential env vars are stripped from child
+> processes. An extension can still read your config files itself, which is
+> the point of the paragraph above.
+
 \`\`\`ts
 export default function (haxford) {
   haxford.registerCommand("ping", "reply with pong", () => "pong")

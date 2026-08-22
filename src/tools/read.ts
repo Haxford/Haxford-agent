@@ -1,5 +1,6 @@
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
+import { redactSecrets } from "../config/secrets.ts"
 import {
   checkAbsolute,
   errorText,
@@ -9,6 +10,8 @@ import {
 
 const DEFAULT_LIMIT = 2000
 const MAX_LINE_CHARS = 2000
+/** Refuse to buffer more than this; paging is what offset/limit are for. */
+const MAX_FILE_BYTES = 50_000_000
 
 const parameters = z.object({
   filePath: z.string().describe("Absolute path to the file to read."),
@@ -72,6 +75,19 @@ Usage:
             `use glob to locate the file by name rather than guessing another path.`,
         }
       }
+      // `file.text()` below buffers the whole file. Without a ceiling, a huge
+      // log — or a character device like /dev/zero, which `exists()` happily
+      // confirms — takes the process down instead of returning an error the
+      // model can act on.
+      if (file.size > MAX_FILE_BYTES) {
+        return {
+          title: `read ${path}`,
+          output:
+            `Error: ${path} is ${file.size} bytes, over the ${MAX_FILE_BYTES}-byte read limit. ` +
+            `Use grep to find what you need, or bash with sed/head to page through it.`,
+          metadata: { path, bytes: file.size },
+        }
+      }
       if (await looksBinary(path)) {
         return {
           title: `read ${path}`,
@@ -79,7 +95,12 @@ Usage:
         }
       }
 
-      const content = await file.text()
+      // Mask credentials before the text goes anywhere. Reading
+      // `~/.config/haxford/haxford.json`, an `.env`, or a stray auth store
+      // otherwise puts a live key into the model's context AND the session
+      // JSONL on disk — bash output has been masked since the beginning, and
+      // a file read is the same leak by a quieter route.
+      const content = redactSecrets(await file.text())
 
       // Track the read even when paging, so edit/write are unblocked.
       recordRead(ctx.sessionID, path)

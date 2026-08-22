@@ -262,7 +262,14 @@ async function runTui(
   let controller: AbortController | undefined
 
   const onPrompt = (text: string): void => {
-    if (running) return
+    // The composer stays live during a run, so a submission that arrives
+    // mid-run is queued instead of dropped. `flushQueued` (in the `finally`
+    // below) re-enters this exact path once the loop goes idle, one prompt
+    // at a time — never concurrently, since `running` still gates it.
+    if (running) {
+      store.enqueue(text)
+      return
+    }
     running = true
     void (async () => {
       const user = userMessage(session.id, text)
@@ -315,6 +322,13 @@ async function runTui(
       } finally {
         controller = undefined
         running = false
+        // Flush one queued prompt through this same path, whatever the run's
+        // outcome — a deliberate abort still flushes, since the user queued
+        // it expecting it to run once the interrupted turn was out of the
+        // way, not for it to be silently dropped. `running` is already false
+        // here, so this re-entry runs the loop rather than re-queuing.
+        const next = store.dequeue()
+        if (next !== undefined) onPrompt(next)
       }
     })()
   }

@@ -9,9 +9,11 @@ haxford [prompt...]          Start a session, optionally with an initial prompt
 haxford -c                   Resume the most recent session for this directory
 haxford -s <session-id>      Resume a specific session
 haxford -p "<prompt>"        Print mode: non-interactive, streams to stdout
+haxford update               Check and install the latest prebuilt binary
 
 Options:
   -m, --model <spec>         provider/model (default: config or deepseek/deepseek-chat-v3.1)
+      --agent <name>         Named agent from .haxford/agents/<name>.md
       --mode <mode>          build | auto | plan  (default: build)
   -p, --print                Non-interactive print mode
   -c, --continue             Resume latest session

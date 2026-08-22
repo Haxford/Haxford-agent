@@ -26,12 +26,41 @@ const CACHE_TTL_MS = 5 * 60_000
  * A non-HTTPS URL for a remote host is refused — the URL may contain auth
  * tokens in query strings or headers, and we will not send those in cleartext.
  */
+/**
+ * Hosts that answer with credentials rather than content.
+ *
+ * The cloud metadata services live on a link-local address that every VM can
+ * reach unauthenticated, and hand out IAM tokens to anything that asks. A URL
+ * reaching this tool is chosen by the model, which means it can be chosen by
+ * text the model read — so "fetch this URL" is one prompt injection away from
+ * "read the instance credentials into the transcript".
+ *
+ * `localhost` stays allowed: fetching your own dev server is the reason the
+ * http exemption exists, and it is a deliberate, documented capability.
+ */
+function blockedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  if (host === "metadata.google.internal" || host === "metadata") return true
+  // 169.254.0.0/16 — IPv4 link-local, home of 169.254.169.254.
+  if (/^169\.254\./.test(host)) return true
+  // fe80::/10 link-local and fd00:ec2::254 (AWS IMDS over IPv6).
+  if (/^fe[89ab][0-9a-f]:/.test(host)) return true
+  if (host === "fd00:ec2::254") return true
+  return false
+}
+
 function validateURL(raw: string): string | null {
   let url: URL
   try {
     url = new URL(raw)
   } catch {
     return `Error: ${JSON.stringify(raw)} is not a valid URL.`
+  }
+  if (blockedHost(url.hostname)) {
+    return (
+      `Error: ${JSON.stringify(raw)} targets a link-local/metadata address. ` +
+      `These serve cloud credentials, not content, and are never fetched.`
+    )
   }
   if (url.protocol === "https:") return null
   if (url.protocol === "http:") {
@@ -47,6 +76,44 @@ function validateURL(raw: string): string | null {
     return `Error: ${JSON.stringify(raw)} uses HTTP for a non-local host. Use HTTPS.`
   }
   return `Error: ${JSON.stringify(raw)} must be an http(s) URL.`
+}
+
+/** Redirect hops followed before giving up. */
+const MAX_REDIRECTS = 5
+
+/**
+ * Fetch, following redirects by hand so every hop is validated.
+ *
+ * `redirect: "follow"` checks only the URL we were given: a validated
+ * `https://ok.example/x` that answers `302 http://169.254.169.254/…` — or
+ * plain `http://` anywhere — would be followed silently, which quietly undoes
+ * both the HTTPS requirement and the metadata block above. Each hop goes back
+ * through `validateURL` instead.
+ */
+async function fetchValidated(
+  start: string,
+): Promise<{ response: Response; url: string } | { error: string }> {
+  let current = start
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const response = await fetch(current, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      redirect: "manual",
+      headers: { "User-Agent": "haxford/webfetch" },
+    })
+
+    const location = response.headers.get("location")
+    if (response.status >= 300 && response.status < 400 && location !== null) {
+      const next = new URL(location, current).href
+      const invalid = validateURL(next)
+      if (invalid) {
+        return { error: `${invalid} (redirected there from ${current})` }
+      }
+      current = next
+      continue
+    }
+    return { response, url: current }
+  }
+  return { error: `Error: ${start} redirected more than ${MAX_REDIRECTS} times.` }
 }
 
 /**
@@ -159,11 +226,11 @@ Usage:
     }
 
     try {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        redirect: "follow",
-        headers: { "User-Agent": "haxford/webfetch" },
-      })
+      const fetched = await fetchValidated(url)
+      if ("error" in fetched) {
+        return { title: `webfetch ${url}`, output: fetched.error }
+      }
+      const { response } = fetched
       if (!response.ok) {
         return {
           title: `webfetch ${url}`,

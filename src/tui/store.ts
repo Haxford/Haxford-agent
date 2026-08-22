@@ -31,6 +31,18 @@ export interface TuiStore {
    * does not notify.
    */
   setToolsExpanded(expanded: boolean): boolean
+  /**
+   * Push a prompt submitted while a run is already in flight onto the back of
+   * the queue. FIFO: the host flushes from the front once idle.
+   */
+  enqueue(text: string): void
+  /** Pop and return the oldest queued prompt, or undefined if the queue is empty. */
+  dequeue(): string | undefined
+  /**
+   * Pop and return the MOST RECENTLY queued prompt (the back of the queue),
+   * for up-arrow-on-empty-composer editing. Undefined if the queue is empty.
+   */
+  popLastQueued(): string | undefined
   /** subscribe(listener) -> unsubscribe; fires only on actual state changes. */
   subscribe(listener: () => void): () => void
 }
@@ -108,6 +120,27 @@ export function createTuiStore(initial: Message[]): TuiStore {
       state = { ...state, toolsExpanded: expanded }
       notify()
       return expanded
+    },
+
+    enqueue(text: string): void {
+      state = { ...state, queue: [...state.queue, text] }
+      notify()
+    },
+
+    dequeue(): string | undefined {
+      const [next, ...rest] = state.queue
+      if (next === undefined) return undefined
+      state = { ...state, queue: rest }
+      notify()
+      return next
+    },
+
+    popLastQueued(): string | undefined {
+      if (state.queue.length === 0) return undefined
+      const last = state.queue[state.queue.length - 1]
+      state = { ...state, queue: state.queue.slice(0, -1) }
+      notify()
+      return last
     },
 
     subscribe(listener: () => void): () => void {

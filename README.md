@@ -6,8 +6,10 @@ A terminal AI coding agent that works across your whole codebase. It assembles a
 - **Bring-your-own-key** — eight built-in providers plus the live OpenRouter catalog.
 - **Permission-gated** — every mutating action is judged by a rule engine and prompts before it runs.
 - **Ten tools** — read, write, edit, bash, glob, grep, todo tracking, webfetch, and a `task` subagent.
+- **Named agents** — customize the loop per-project with `.haxford/agents/*.md`; override model, mode, and tool allowlists.
 - **Resumable sessions** — JSONL transcripts with compaction, resume, and fork.
 - **Extensible without a fork** — skills, TypeScript extensions, and themes load from `~/.haxford`; `/reload` picks up changes.
+- **Self-updating** — `haxford update` keeps you on the latest prebuilt binary with checksum verification.
 
 ## Install
 
@@ -53,9 +55,9 @@ Then run it in a project directory:
 haxford                          # open the TUI in this directory
 haxford "explain src/index.ts"   # start with an initial prompt
 haxford -c                       # resume the most recent session here
+haxford --agent reviewer         # use a named agent from .haxford/agents/
 haxford -m openrouter/z-ai/glm-5.2   # pick a model for this run
-haxford --mode plan              # read-only research mode
-haxford -p "list the tsconfig settings"   # non-interactive, streams to stdout
+haxford update                   # check and install the latest prebuilt binary
 ```
 
 Type a request and press Enter. The model streams its reply; tool calls run inline. Mutating actions (`write`, `edit`, `bash`) prompt a confirmation — press `a` to allow once, `l` to always allow, or `d` to deny. Run `/help` any time for in-app help.

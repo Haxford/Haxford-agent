@@ -8,13 +8,14 @@ haxford has ten built-in slash commands; extensions can register more (see [Exte
 |---|---|---|
 | `/help` | Show in-app command and keybinding help. | No — runs immediately on accept. |
 | `/model` | Open the model picker (live catalog with pricing). | No. |
+| `/agent [name]` | Switch named agents. With no arg, opens a picker of `.haxford/agents/*.md` files. | Yes — or omit to pick. |
 | `/connect` | Connect or re-key a provider without leaving the TUI. | No — runs immediately. |
 | `/sessions` | Open the session picker for this project. | No — runs immediately. |
 | `/compact` | Compact the conversation now. See [Sessions → compaction](sessions.md#compaction). | No — runs immediately. |
 | `/init` | Analyze the codebase and create/improve `AGENTS.md`. | No (sends a canned prompt). |
 | `/mode [build\|auto\|plan]` | Switch permission mode. With no arg, cycles build → auto → plan → build. | Yes — or omit to cycle. |
 | `/clear` | Start a fresh session. | No — runs immediately. |
-| `/reload` | Rescan skills, extensions, and themes. See [Extending](extending.md#4-reload). | No — runs immediately. |
+| `/reload` | Rescan skills, extensions, and themes. See [Extending](extending.md#5-reload). | No — runs immediately. |
 | `/exit` | Quit haxford. | No — runs immediately. |
 
 Commands that take no argument submit and run as soon as autocomplete lands on a single match. Commands that take an argument (`/mode`) complete the token and add a trailing space for you to type the value; `Enter` then submits.

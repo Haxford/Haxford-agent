@@ -271,6 +271,22 @@ Usage:
         }
       }
 
+      // The approval above is an await: the user thinks, and meanwhile the
+      // file can change under us — a formatter, a git checkout, another
+      // agent. Every span is an offset into the content read BEFORE the
+      // prompt, so writing now would splice new text at stale positions and
+      // silently discard whatever landed in between. Re-read and refuse
+      // rather than clobber; the model can read again and retry.
+      const current = await Bun.file(path).text()
+      if (current !== content) {
+        return {
+          title: `edit ${path}`,
+          output:
+            `Error: ${path} changed on disk while this edit was awaiting approval. ` +
+            `Nothing was written. Read the file again and reapply the edit against its current contents.`,
+        }
+      }
+
       // Apply all spans to the original content in a single pass, building
       // the new string by slicing between spans and inserting newStrings.
       // Spans are sorted by start offset; overlaps were already rejected.

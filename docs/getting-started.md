@@ -86,9 +86,18 @@ Gated actions are denied in print mode (there is no UI to ask), so use `--mode a
 haxford -p --mode auto "run bun test and report failures"
 ```
 
-## Next
+## Upgrading
+
+Run `haxford update` to check and install the latest prebuilt binary. It downloads the release for your platform, verifies the checksum, and installs to the same location. If you're already on the latest, it's a no-op.
+
+```bash
+haxford update
+```
+
+## Next steps
 
 - [Using haxford](usage.md) - the full CLI reference, model resolution, and print mode details.
+- [Extending](extending.md) - skills, named agents, extensions, and themes without a fork.
 - [Tools](tools.md) - what the agent can do on your behalf, tool by tool.
 - [Providers](providers.md) - every built-in provider, the model spec format, and `/connect`.
 - [Permissions](permissions.md) - the three modes and how rules evaluate.

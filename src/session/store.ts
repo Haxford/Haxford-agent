@@ -96,7 +96,15 @@ export async function getSession(
   directory: string,
   sessionID: string,
 ): Promise<SessionInfo | undefined> {
-  const file = Bun.file(sessionMetaFile(directory, sessionID))
+  let metaPath: string
+  try {
+    metaPath = sessionMetaFile(directory, sessionID)
+  } catch {
+    // An id that is not a name (a traversal attempt from `-s`) names no
+    // session, which is exactly what "not found" means to every caller.
+    return undefined
+  }
+  const file = Bun.file(metaPath)
   if (!(await file.exists())) return undefined
   try {
     return (await file.json()) as SessionInfo
@@ -159,8 +167,15 @@ export async function loadHistory(
     } catch {
       continue
     }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue
+    }
     const msg = parsed as Message
     if (typeof msg.id !== "string") continue
+    // A record with no parts array is a half-written or hand-edited line.
+    // Every consumer maps over `parts` — `forkSession` does it directly —
+    // so admitting one turns a corrupt transcript into a crash on resume.
+    if (!Array.isArray(msg.parts)) continue
     if (!byId.has(msg.id)) order.push(msg.id)
     byId.set(msg.id, msg)
   }

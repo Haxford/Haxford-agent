@@ -51,6 +51,16 @@ export interface TuiState {
    * `splitTranscript`.
    */
   epoch: number
+  /**
+   * Prompts submitted while a run is already in flight, oldest first.
+   *
+   * Not agent-loop state and not driven by `reduce` — the composer stays live
+   * while running, so a submission during a run is pushed here instead of
+   * being dropped, and flushed one at a time through the normal `onPrompt`
+   * path once the loop goes idle. Same non-AgentEvent pattern as `hint` and
+   * `toolsExpanded`: mutated via dedicated `TuiStore` methods, not events.
+   */
+  queue: string[]
 }
 
 export const initialTuiState: TuiState = {
@@ -62,6 +72,7 @@ export const initialTuiState: TuiState = {
   toolsExpanded: false,
   epoch: 0,
   hint: undefined,
+  queue: [],
 }
 
 /** Maximum number of notices retained in state. */

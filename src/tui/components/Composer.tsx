@@ -40,6 +40,14 @@ export interface ComposerProps {
   onPopupAccept?: () => void
   /** Called when the user dismisses the autocomplete popup (esc). */
   onPopupDismiss?: () => void
+  /**
+   * Up-arrow on an empty composer pops the most recently queued prompt (see
+   * `TuiStore.popLastQueued`) back into the composer for editing, ahead of
+   * local submit-history navigation. Returns the popped text, or undefined
+   * when nothing is queued — in which case up-arrow falls through to normal
+   * history navigation.
+   */
+  onPopQueued?: () => string | undefined
 }
 
 /**
@@ -61,16 +69,27 @@ export function Composer({
   onPopupNavigate,
   onPopupAccept,
   onPopupDismiss,
+  onPopQueued,
   handleRef,
 }: ComposerProps): React.ReactElement {
   const [history, setHistory] = useState<string[]>([])
   const [cursor, setCursor] = useState<number>(-1) // -1 = "current typing"
   const [seed, setSeed] = useState("")
   const [resetKey, setResetKey] = useState(0)
+  // Tracks the live (uncontrolled) input value, keystroke by keystroke, so
+  // the up-arrow handler below can tell "composer is empty" from "composer
+  // has unsubmitted text" without the parent round-tripping it back down.
+  const [liveValue, setLiveValue] = useState("")
 
   const reseed = useCallback((next: string) => {
     setSeed(next)
+    setLiveValue(next)
     setResetKey((k) => k + 1)
+    onValueChange?.(next)
+  }, [onValueChange])
+
+  const handleChange = useCallback((next: string) => {
+    setLiveValue(next)
     onValueChange?.(next)
   }, [onValueChange])
 
@@ -106,6 +125,16 @@ export function Composer({
       return
     }
     if (key.upArrow) {
+      // An empty composer with something queued edits the queue first — the
+      // whole point of pushing it back is to fix it before it's ever sent,
+      // so this takes priority over cycling through already-sent history.
+      if (liveValue.trim().length === 0 && cursor === -1) {
+        const popped = onPopQueued?.()
+        if (popped !== undefined) {
+          reseed(popped)
+          return
+        }
+      }
       if (history.length === 0) return
       const next = cursor === -1 ? history.length - 1 : Math.max(0, cursor - 1)
       setCursor(next)
@@ -147,7 +176,7 @@ export function Composer({
             defaultValue={seed}
             placeholder={placeholder ?? (disabled ? "agent running\u2026" : "ask anything, or / for commands")}
             onSubmit={commit}
-            onChange={onValueChange}
+            onChange={handleChange}
           />
         </Box>
       </Box>

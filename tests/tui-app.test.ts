@@ -106,13 +106,13 @@ describe("HaxfordApp rendering + app-level input", () => {
     expect(rules).toHaveLength(2)
   })
 
-  test("Composer is disabled while running (placeholder hint)", async () => {
+  test("Composer stays live while running, with a queued-hint placeholder", async () => {
     const { store, inst } = mount()
     store.dispatch({ type: "turn.start", turn: 1 })
     await flush()
     const frame = inst.lastFrame() ?? ""
-    expect(frame).toContain("running")
-    expect(frame).toContain("agent running")
+    expect(frame).toContain("esc to interrupt")
+    expect(frame).toContain("queued until the current run finishes")
   })
 
   test("running shows an activity line with a verb, clock, and the way out", async () => {
@@ -147,7 +147,9 @@ describe("HaxfordApp rendering + app-level input", () => {
     const { store, inst, calls } = mount()
     store.dispatch({ type: "turn.start", turn: 2 })
     await flush()
-    expect(inst.lastFrame() ?? "").toContain("running")
+    // The activity line is the live "a run is in flight" indicator now that
+    // the composer no longer shows a disabled "agent running..." placeholder.
+    expect(inst.lastFrame() ?? "").toContain("esc to interrupt")
     inst.stdin.write("\u001b") // esc
     await flush(40)
     expect(calls.abort).toBe(1)

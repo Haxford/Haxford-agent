@@ -1,10 +1,11 @@
 # Extending haxford
 
-haxford reads three directories under `~/.haxford`. Nothing here needs a build
+haxford reads four directories under `~/.haxford`. Nothing here needs a build
 step, a manifest, or a restart of anything but haxford itself.
 
 | Layer | Lives in | What it is |
 |---|---|---|
+| **Agents** | `~/.haxford/agents/<name>.md` or `.haxford/agents/<name>.md` | Personas with system-prompt addendum and optional model/mode/tool overrides. |
 | **Skills** | `~/.haxford/skills/<name>/SKILL.md` | Instructions the model pulls into context when relevant. |
 | **Extensions** | `~/.haxford/extensions/*.ts` | Code: slash commands, tools, lifecycle hooks. |
 | **Themes** | `~/.haxford/themes/<name>.json` | Colour tokens for the TUI. |
@@ -182,7 +183,41 @@ modules those files import keep the version first loaded. If you edit a shared
 
 ---
 
-## 5. Writing one from inside haxford
+## 5. Named agents
+
+Named agents customize the loop per-project. They live in `.haxford/agents/<name>.md` (project, takes precedence) or `~/.haxford/agents/<name>.md` (global). Each agent is a markdown file with frontmatter and a body.
+
+```markdown
+---
+description: Code reviewer with strict standards
+model: anthropic/claude-sonnet-5
+mode: build
+tools: [read, grep, bash]
+---
+
+# Code Reviewer
+
+You are a strict code reviewer. Your job is to identify:
+- Bugs and security issues
+- Performance problems
+- Style violations against the project's conventions
+
+Be concise and direct.
+```
+
+Rules:
+
+- `description` is a single line shown in the `/agent` picker.
+- `model` (optional) overrides the default for this agent.
+- `mode` (optional) sets the permission posture: `plan`, `build`, or `auto`.
+- `tools` (optional) restricts which tools the agent can call; absent means all.
+- Everything after the closing `---` is appended to the system prompt.
+
+Switch agents with `--agent <name>` on the CLI or `/agent <name>` in the TUI.
+
+---
+
+## 6. Writing one from inside haxford
 
 You can ask haxford to extend itself — it has this document and a `write` tool:
 

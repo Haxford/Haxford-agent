@@ -1,5 +1,6 @@
 import path from "node:path"
 import { stat } from "node:fs/promises"
+import { invalidateSecretCache } from "./secrets.ts"
 import { LOCAL_SETTINGS_FILE } from "../permission/engine.ts"
 import type { TrustConfig } from "../permission/engine.ts"
 import type { PermissionAction, PermissionRules } from "../types/config.ts"
@@ -184,6 +185,36 @@ async function readJsonFile(file: string): Promise<Partial<HaxfordConfigFile>> {
 }
 
 /**
+ * Keys that are not data when assigned to a plain object.
+ *
+ * Config files are untrusted — `.haxford/settings.local.json` explicitly so,
+ * and `./haxford.json` arrives with any repository you clone. `JSON.parse`
+ * makes `__proto__` an ordinary own property, but `merged[tool] = rule`
+ * *assigns* it, which sets the merged object's prototype instead. A project
+ * config of `{"permission": {"__proto__": {"bash": "allow"}}}` would then
+ * answer `rules["bash"]` with "allow" through the prototype chain and hand
+ * the model unattended shell access it was never granted.
+ *
+ * They are dropped rather than escaped: no tool is called `__proto__`, so
+ * nothing legitimate is lost.
+ */
+const POISON_KEYS: ReadonlySet<string> = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+])
+
+/** A copy of a rule record with prototype-bearing keys removed. */
+function sanitize<T extends object>(record: T): T {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (POISON_KEYS.has(key)) continue
+    out[key] = value
+  }
+  return out as T
+}
+
+/**
  * Merge permission rules one tool at a time.
  *
  * A shallow spread would let a file that names a single `bash` pattern
@@ -197,12 +228,13 @@ function mergePermission(
   base: PermissionRules | undefined,
   over: PermissionRules | undefined,
 ): PermissionRules {
-  const merged: PermissionRules = { ...base }
+  const merged: PermissionRules = base === undefined ? {} : sanitize(base)
   for (const [tool, rule] of Object.entries(over ?? {})) {
+    if (POISON_KEYS.has(tool)) continue
     const existing = merged[tool]
     merged[tool] =
       typeof existing === "object" && typeof rule === "object"
-        ? { ...existing, ...rule }
+        ? { ...sanitize(existing), ...sanitize(rule) }
         : rule
   }
   return merged
@@ -390,4 +422,6 @@ export async function saveGlobalProviderCredential(
   await Bun.write(file, JSON.stringify({ ...existing, providers }, null, 2) + "\n")
   const fs = await import("node:fs")
   fs.chmodSync(file, 0o600)
+  // The new key must be redactable from tool output straight away.
+  invalidateSecretCache()
 }

@@ -1,6 +1,7 @@
 import { isAbsolute, join, resolve } from "node:path"
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
+import { redactSecrets } from "../config/secrets.ts"
 import { errorText, isIgnored, looksBinary, readGitignores } from "./shared.ts"
 
 const LIMIT = 100
@@ -225,9 +226,12 @@ Usage:
       }
 
       const shown = matches.slice(0, limit)
-      const body = shown
-        .map((match) => `${match.path}:${match.line}: ${match.text}`)
-        .join("\n")
+      // Matched lines are file contents: a grep for "key" across a config
+      // directory would otherwise put live credentials into the model's
+      // context and the session JSONL. Masked once over the whole body.
+      const body = redactSecrets(
+        shown.map((match) => `${match.path}:${match.line}: ${match.text}`).join("\n"),
+      )
       const truncated = matches.length > limit
       const notes = truncated
         ? `\n\n[Showing the first ${limit} matches. ` +

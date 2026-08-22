@@ -1,3 +1,4 @@
+import { chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
@@ -70,6 +71,10 @@ async function spill(text: string): Promise<string | null> {
   )
   try {
     await Bun.write(path, text)
+    // The temp directory is shared with every other user on the machine and
+    // this file is a verbatim copy of a command's output — build logs, config
+    // dumps, whatever the command printed. Default 0644 would publish it.
+    chmodSync(path, 0o600)
     return path
   } catch {
     return null
