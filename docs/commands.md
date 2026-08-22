@@ -1,6 +1,6 @@
 # Commands
 
-haxford has eight built-in slash commands. In the TUI, type `/` to open autocomplete; `↑`/`↓` moves the selection, `Enter` accepts, `Esc` dismisses.
+haxford has ten built-in slash commands; extensions can register more (see [Extending](extending.md)). In the TUI, type `/` to open autocomplete; `↑`/`↓` moves the selection, `Enter` accepts, `Esc` dismisses.
 
 ## Slash command reference
 
@@ -8,16 +8,18 @@ haxford has eight built-in slash commands. In the TUI, type `/` to open autocomp
 |---|---|---|
 | `/help` | Show in-app command and keybinding help. | No — runs immediately on accept. |
 | `/model` | Open the model picker (live catalog with pricing). | No. |
+| `/connect` | Connect or re-key a provider without leaving the TUI. | No — runs immediately. |
 | `/sessions` | Open the session picker for this project. | No — runs immediately. |
 | `/compact` | Compact the conversation now. See [Sessions → compaction](sessions.md#compaction). | No — runs immediately. |
 | `/init` | Analyze the codebase and create/improve `AGENTS.md`. | No (sends a canned prompt). |
 | `/mode [build\|auto\|plan]` | Switch permission mode. With no arg, cycles build → auto → plan → build. | Yes — or omit to cycle. |
 | `/clear` | Start a fresh session. | No — runs immediately. |
+| `/reload` | Rescan skills, extensions, and themes. See [Extending](extending.md#4-reload). | No — runs immediately. |
 | `/exit` | Quit haxford. | No — runs immediately. |
 
 Commands that take no argument submit and run as soon as autocomplete lands on a single match. Commands that take an argument (`/mode`) complete the token and add a trailing space for you to type the value; `Enter` then submits.
 
-Unknown commands (anything not in the table) open the help panel and emit a notice.
+Unknown commands (anything not in the table and not registered by an extension) open the help panel and emit a notice.
 
 ## Autocomplete
 
@@ -35,9 +37,12 @@ Unknown commands (anything not in the table) open the help panel and emit a noti
 | `Tab` | Cycle permission mode — only when the composer is empty, idle, and no overlay is open. |
 | `↑` / `↓` | Navigate prompt history in the composer, or a picker list when an overlay is open. |
 | `a` / `l` / `d` | While a permission dialog is open: allow once / always (session) / deny. |
-| `ctrl+c` | Abort the run; press again to exit. |
+| `ctrl+o` | Expand or collapse tool output across the transcript. |
+| `ctrl+c` | Interrupt the run; pressed twice in a row when idle, quit. |
 
 `Esc` has a strict precedence: a pending permission dialog is modal and consumes `Esc` as a denial first. If no dialog is open and a turn is running, `Esc` aborts the turn. If no turn is running, `Esc` closes any open overlay (help, sessions picker, model picker).
+
+`ctrl+c` outranks everything, including a pending permission dialog. When the composer is idle it arms an exit confirmation — the second press quits; any other key cancels it.
 
 ## Permission dialog
 

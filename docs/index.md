@@ -12,8 +12,9 @@ haxford is a single-process terminal AI coding agent. It assembles a system prom
 - [Commands](commands.md) - slash commands, autocomplete, keybindings.
 - [Security](security.md) - trust model, credential handling, vulnerability reporting.
 
-## Configuration
+## Customization
 
+- [Extending](extending.md) - skills, TypeScript extensions (commands, tools, hooks), and TUI themes.
 - [Configuration](configuration.md) - config files, merge rules, full schema.
 - [Environment variables](environment-variables.md) - every variable haxford reads.
 - [Sessions](sessions.md) - storage layout, resume, fork, compaction.
@@ -33,13 +34,15 @@ haxford is a single-process terminal AI coding agent. It assembles a system prom
 | Providers | 8 built-in (Anthropic, OpenAI, OpenRouter, Ollama, z.ai, Moonshot, opencode zen, codex) + custom gateways | [Providers](providers.md) |
 | Live model catalog | OpenRouter catalog with pricing, cached 1h | [Providers → model picker](providers.md#model-picker) |
 | Permission modes | `build`, `auto`, `plan` — rule engine + scoped trust + always-allow persistence | [Permissions](permissions.md) |
-| Tools | Ten built-in: `read`, `write`, `edit`, `bash`, `glob`, `grep`, `todowrite`, `todoread`, `task`, `webfetch` | [Tools](tools.md) |
-| Slash commands | 8 built-in with autocomplete | [Commands](commands.md) |
+| Tools | Ten built-in: `read`, `write`, `edit`, `bash`, `glob`, `grep`, `todowrite`, `todoread`, `task`, `webfetch` — extensions can add more | [Tools](tools.md) |
+| Slash commands | 10 built-in with autocomplete; extensions register more | [Commands](commands.md) |
+| Skills | `SKILL.md` folders indexed into the prompt, body read on demand | [Extending → skills](extending.md#1-skills) |
+| Themes | JSON colour-token files, 16 ANSI colors, `HAXFORD_THEME` or config | [Extending → themes](extending.md#3-themes) |
 | Sessions | JSONL append-only, resume, fork, compaction | [Sessions](sessions.md) · [Session format](session-format.md) |
 | Subagents | `task` tool spawns a nested loop, inherits mode, cannot prompt, hard 30-turn budget | [Tools → task](tools.md#task) |
 | Retry | Classifier-driven, exponential backoff, quota errors fail fast | [Sessions → retry](sessions.md#tools-retry-and-the-loop) |
 | Image input | No — text parts only (the message contract reserves an image part) | [Session format](session-format.md#parts) |
-| MCP / plugins | No — not yet | [Tools → adding tools](tools.md#adding-tools) |
+| MCP | No — not yet | — |
 
 ## Where to start
 

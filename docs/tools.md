@@ -88,4 +88,7 @@ See [Security](security.md#untrusted-content) for what fetched pages mean for pr
 
 ## Adding tools
 
-There is no plugin runtime yet — tools are compiled in. To add one, implement the `Tool` contract from `src/types/tool.ts` and register it in `allTools()` (`src/tools/index.ts`); see [Architecture](architecture.md).
+There are two routes:
+
+- **As an extension** — drop a `.ts` file in `~/.haxford/extensions/` that calls `haxford.registerTool(...)`; `/reload` picks it up. No rebuild, no fork. See [Extending → adding a tool](extending.md#adding-a-tool) for the API and the rejection rules (built-ins win id collisions).
+- **Compiled in** — implement the `Tool` contract from `src/types/tool.ts` and register it in `allTools()` (`src/tools/index.ts`). The list order is stable on purpose: it is rendered ahead of the system prompt, so it must not vary between requests. See [Architecture](architecture.md).

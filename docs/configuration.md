@@ -44,7 +44,8 @@ An `AGENTS.md` in the project root is read verbatim and appended to the system p
     }
   },
   "maxTurns": 100,
-  "autoCompactAt": 0.9
+  "autoCompactAt": 0.9,
+  "theme": "violet"
 }
 ```
 
@@ -57,6 +58,7 @@ An `AGENTS.md` in the project root is read verbatim and appended to the system p
 | `permission` | object | — | [Permission rules](permissions.md#rules). |
 | `maxTurns` | number | `100` | Max loop turns per prompt before the run stops with reason `max_turns`. |
 | `autoCompactAt` | number | `0.9` | Auto-compact when context usage exceeds this fraction (0–1). See [Sessions → compaction](sessions.md#compaction). |
+| `theme` | string | — | Name of a theme in `~/.haxford/themes`. The `HAXFORD_THEME` env var overrides it. See [Extending → themes](extending.md#3-themes). |
 
 ### `providers` entries
 

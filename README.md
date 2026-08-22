@@ -7,6 +7,7 @@ A terminal AI coding agent that works across your whole codebase. It assembles a
 - **Permission-gated** — every mutating action is judged by a rule engine and prompts before it runs.
 - **Ten tools** — read, write, edit, bash, glob, grep, todo tracking, webfetch, and a `task` subagent.
 - **Resumable sessions** — JSONL transcripts with compaction, resume, and fork.
+- **Extensible without a fork** — skills, TypeScript extensions, and themes load from `~/.haxford`; `/reload` picks up changes.
 
 ## Install
 
@@ -71,6 +72,7 @@ For the full first-run flow, see [Getting started](docs/getting-started.md).
 | [Providers](docs/providers.md) | All eight providers, auth precedence, `/connect`, model spec format |
 | [Permissions](docs/permissions.md) | Modes, rule syntax, compound commands, always-allow persistence |
 | [Commands](docs/commands.md) | Slash command reference, autocomplete, keybindings |
+| [Extending](docs/extending.md) | Skills, extensions (commands/tools/hooks), themes, `/reload` |
 | [Configuration](docs/configuration.md) | Config files, merge rules, annotated example |
 | [Sessions](docs/sessions.md) | Storage layout, resume, fork, compaction |
 | [Session format](docs/session-format.md) | JSONL transcript schema and entry types |
@@ -84,7 +86,7 @@ A single-process agent loop: system prompt + history + tool schemas → stream f
 
 ## Status & limits
 
-Single-process by design — no MCP server or plugin runtime yet. Image input is not supported; only text parts are sent to the model. There is no built-in sandboxing; haxford runs with the permissions of the user and process that launched it. Read [Security](docs/security.md) before running it in `auto` mode or against an unfamiliar checkout.
+Single-process by design — no MCP support yet. Image input is not supported; only text parts are sent to the model. There is no built-in sandboxing; haxford runs with the permissions of the user and process that launched it. Read [Security](docs/security.md) before running it in `auto` mode or against an unfamiliar checkout.
 
 ## Contributing
 
