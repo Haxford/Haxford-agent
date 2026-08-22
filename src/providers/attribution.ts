@@ -28,7 +28,7 @@ export const APP_URL = "https://haxford.dev/haxford-agent"
  * Kept in step with `package.json` and the TUI banner by a test — if you bump
  * one, bump all of them or the suite says so.
  */
-export const APP_VERSION = "0.1.0"
+export const APP_VERSION = "0.2.0"
 
 /** `Haxford-Agent/0.1.0 (+https://haxford.dev/haxford-agent)` */
 export const USER_AGENT = `${APP_NAME}/${APP_VERSION} (+${APP_URL})`
