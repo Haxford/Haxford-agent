@@ -1,11 +1,10 @@
 # Extending haxford
 
-haxford reads four directories under `~/.haxford`. Nothing here needs a build
+haxford reads three directories under `~/.haxford`. Nothing here needs a build
 step, a manifest, or a restart of anything but haxford itself.
 
 | Layer | Lives in | What it is |
 |---|---|---|
-| **Agents** | `~/.haxford/agents/<name>.md` or `.haxford/agents/<name>.md` | Personas with system-prompt addendum and optional model/mode/tool overrides. |
 | **Skills** | `~/.haxford/skills/<name>/SKILL.md` | Instructions the model pulls into context when relevant. |
 | **Extensions** | `~/.haxford/extensions/*.ts` | Code: slash commands, tools, lifecycle hooks. |
 | **Themes** | `~/.haxford/themes/<name>.json` | Colour tokens for the TUI. |
@@ -50,6 +49,22 @@ Rules:
 A file in `~/.haxford/extensions/` that default-exports a function. Bun runs
 TypeScript directly, so `.ts` needs no compilation. Files load in **filename
 order** — prefix with `10-`, `20-` if one must run before another.
+
+> **An extension is code you are choosing to run.** haxford imports every file
+> in this directory at startup, in the same process, with your user's full
+> privileges — your filesystem, your network, your environment. There is no
+> sandbox and no permission prompt around an extension itself; the permission
+> engine gates what the *model* asks for, not what your own extension code
+> does. Treat adding one exactly as you would treat `curl … | sh`: read it
+> first, and only install extensions you trust. A broken extension is
+> contained (an import that throws, a hook that fails, or a bad registration
+> is reported as a warning and skipped, and the session continues) — a
+> *malicious* one is not.
+>
+> haxford never passes provider API keys to an extension: the API object below
+> is the entire surface, and the credential env vars are stripped from child
+> processes. An extension can still read your config files itself, which is
+> the point of the paragraph above.
 
 ```ts
 export default function (haxford) {
@@ -183,41 +198,7 @@ modules those files import keep the version first loaded. If you edit a shared
 
 ---
 
-## 5. Named agents
-
-Named agents customize the loop per-project. They live in `.haxford/agents/<name>.md` (project, takes precedence) or `~/.haxford/agents/<name>.md` (global). Each agent is a markdown file with frontmatter and a body.
-
-```markdown
----
-description: Code reviewer with strict standards
-model: anthropic/claude-sonnet-5
-mode: build
-tools: [read, grep, bash]
----
-
-# Code Reviewer
-
-You are a strict code reviewer. Your job is to identify:
-- Bugs and security issues
-- Performance problems
-- Style violations against the project's conventions
-
-Be concise and direct.
-```
-
-Rules:
-
-- `description` is a single line shown in the `/agent` picker.
-- `model` (optional) overrides the default for this agent.
-- `mode` (optional) sets the permission posture: `plan`, `build`, or `auto`.
-- `tools` (optional) restricts which tools the agent can call; absent means all.
-- Everything after the closing `---` is appended to the system prompt.
-
-Switch agents with `--agent <name>` on the CLI or `/agent <name>` in the TUI.
-
----
-
-## 6. Writing one from inside haxford
+## 5. Writing one from inside haxford
 
 You can ask haxford to extend itself — it has this document and a `write` tool:
 
