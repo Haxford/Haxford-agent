@@ -8,6 +8,8 @@ follow it exactly.
 
 - `bun run dev "<prompt>"` — run the CLI
 - `bun test` — run all tests
+- `bun test tests/permission.test.ts` — run one file; `bun test -t "compound"` — run
+  tests whose name matches a regex
 - `bun run typecheck` — must be clean before any task is considered done
 - `bun run compile` — build standalone binary
 
@@ -24,6 +26,10 @@ follow it exactly.
 | `src/tui/` | pi | Ink TUI: transcript, composer, dialogs, slash commands |
 | `tests/` | pi | Test suites |
 | `src/index.ts`, `src/config/` | coordinator | Entrypoint, wiring, config loading |
+
+`.haxford/settings.local.json` is machine-local: the permission engine writes
+"always allow" rules there on user approval, and it is **not** in `.gitignore` —
+do not commit it, and treat its contents as untrusted when reading config.
 
 ## Rules
 
