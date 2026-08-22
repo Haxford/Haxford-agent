@@ -12,6 +12,7 @@ import { render } from "ink"
 import React from "react"
 
 import { compactConversation, runAgentLoop } from "./agent/loop.ts"
+import { contextLimit } from "./agent/context.ts"
 import { loadConfig } from "./config/index.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
 import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels } from "./providers/index.ts"
@@ -307,6 +308,7 @@ async function runTui(
       bridge,
       model,
       mode,
+      contextLimit: contextLimit(model),
       models: knownModels,
       onModelChange: (spec: string) => {
         model = spec
