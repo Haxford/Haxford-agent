@@ -11,7 +11,7 @@ haxford is a terminal coding agent. It runs in one Bun process: no daemon, no la
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Haxford/Haxford-agent/main/install.sh | bash
+curl -fsSL https://haxford.dev/install.sh | bash
 ```
 
 That downloads the release binary for your platform, checks it against the release's `checksums.txt`, installs it to `~/.local/bin`, and adds that directory to your `PATH` if it isn't there already. Run the same line again to upgrade — it exits early when you're already current.

@@ -37,9 +37,11 @@ export const HEADER_LINES = 3
 export const HEADER_HINTS =
   "esc interrupt · ctrl+c twice quit · / commands · /help more"
 
-/** Line 3: the self-awareness line. Dim; it is context, not an action. */
+/** Line 3: the self-awareness line. Dim; it is context, not an action.
+ * Kept under 78 chars so it never wraps at an 80-column terminal — the pin
+ * math subtracts HEADER_LINES and wrapping would shift first paint. */
 export const HEADER_ABOUT =
-  "haxford can explain and extend itself - ask about skills, extensions, themes, or read ~/.haxford/EXTENDING.md"
+  "self-extensible: skills · extensions · themes · agents · ~/.haxford/EXTENDING.md"
 
 /** Replace a leading home directory with `~`, so the footer cwd stays readable. */
 export function tildeCwd(

@@ -1,0 +1,11 @@
+# haxford.dev install proxy
+# Deploy: cd workers && npx wrangler deploy
+name = "haxford-install"
+main = "proxy.ts"
+compatibility_date = "2025-08-22"
+
+# Route: haxford.dev/* traffic goes to this Worker
+# (DNS is already proxied through Cloudflare, so this just works)
+routes = [
+  { pattern = "haxford.dev/*", zone_id = "<YOUR_ZONE_ID>" },
+]

@@ -16,7 +16,7 @@ A terminal AI coding agent that works across your whole codebase. It assembles a
 One line — downloads the prebuilt binary for your platform, verifies its checksum, and installs to `~/.local/bin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Haxford/Haxford-agent/main/install.sh | bash
+curl -fsSL https://haxford.dev/install.sh | bash
 ```
 
 Re-run it any time to upgrade; it is a no-op when you are already on the latest release. Builds are published for Linux (x64, arm64, glibc and musl) and macOS (Intel and Apple silicon), including `-baseline` variants for x86-64 CPUs without AVX2 — the installer detects which one your machine needs.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # haxford installer — https://github.com/Haxford/Haxford-agent
 #
-#   curl -fsSL https://raw.githubusercontent.com/Haxford/Haxford-agent/main/install.sh | bash
+#   curl -fsSL https://haxford.dev/install.sh | bash
 #
 # Downloads the prebuilt binary for this platform from GitHub Releases, verifies
 # its checksum, and installs it to ~/.local/bin.
@@ -284,6 +284,6 @@ fi
 # --- done --------------------------------------------------------------------
 printf '\n  %sready.%s run %shaxford%s to start.\n\n' "$C_BOLD" "$C_OFF" "$C_ACCENT" "$C_OFF"
 note "key         export ANTHROPIC_API_KEY=… (or /connect inside the TUI)"
-note "upgrade     curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash"
+note "upgrade     curl -fsSL https://haxford.dev/install.sh | bash"
 note "uninstall   rm $DEST/haxford"
 printf '\n'

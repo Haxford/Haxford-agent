@@ -18,6 +18,11 @@ function flush(ms = 40): Promise<void> {
 
 const NO_USAGE = { input: 0, output: 0, reasoning: 0 }
 
+// Ink measures the real stdout; runners differ (CI pty is 80 cols), which
+// changes wrapping and therefore frame heights. Pin it for determinism.
+process.stdout.columns = 100
+process.stdout.rows = 40
+
 function mount(overrides: Partial<Parameters<typeof HaxfordApp>[0]> = {}): {
   store: TuiStore
   inst: ReturnType<typeof render>
