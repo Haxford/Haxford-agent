@@ -2,6 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import type { LanguageModel } from "ai"
 import type { HaxfordConfig } from "../types/config.ts"
+import { attributionHeaders } from "./attribution.ts"
 import {
   codexAccessToken,
   opencodeAuthPath,
@@ -9,8 +10,22 @@ import {
   tryReadCodexAuth,
 } from "./auth.ts"
 
+/**
+ * How haxford identifies itself to providers. Re-exported so consumers can
+ * import provider-facing identity from one place (the TUI banner shares
+ * APP_VERSION with it).
+ */
+export {
+  APP_NAME,
+  APP_URL,
+  APP_VERSION,
+  USER_AGENT,
+  OPENROUTER_ATTRIBUTION,
+  attributionHeaders,
+} from "./attribution.ts"
+
 /** Used when neither config nor HAXFORD_MODEL specifies a model. */
-export const DEFAULT_MODEL_SPEC = "anthropic/claude-sonnet-5"
+export const DEFAULT_MODEL_SPEC = "openrouter/deepseek/deepseek-chat-v3.1"
 
 /**
  * Validate that a provider base URL uses HTTPS, or is a local address
@@ -146,7 +161,10 @@ async function probeOllama(target: string): Promise<boolean> {
   try {
     const response = await fetch(`${root}/api/tags`, {
       method: "GET",
-      ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+      headers: {
+        ...attributionHeaders("ollama"),
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      },
       signal: AbortSignal.timeout(OLLAMA_PROBE_TIMEOUT_MS),
     })
     // We only care that something answered; drop the body promptly.
@@ -234,10 +252,7 @@ const PROVIDERS: Record<string, ProviderDef> = {
     envKey: "OPENROUTER_API_KEY",
     baseURL: "https://openrouter.ai/api/v1",
     api: "chat",
-    headers: {
-      "HTTP-Referer": "https://haxford.dev/haxford-agent",
-      "X-Title": "Haxford Agent",
-    },
+    // HTTP-Referer / X-Title come from attributionHeaders(); see attribution.ts.
     knownModels: [
       // flagship / frontier coding
       "anthropic/claude-sonnet-5",
@@ -251,6 +266,7 @@ const PROVIDERS: Record<string, ProviderDef> = {
       // budget
       "openai/gpt-5-mini",
       "openai/gpt-5-nano",
+      "deepseek/deepseek-chat-v3.1",
       "deepseek/deepseek-v3.2",
       "deepseek/deepseek-v4-flash",
       "qwen/qwen3-coder",
@@ -427,7 +443,14 @@ function construct(
   const urlError = validateBaseURL(baseURL)
   if (urlError) throw new Error(urlError)
 
-  const headers = { ...def.headers, ...def.resolveHeaders?.(apiKey) }
+  // Attribution first, so a provider def (or its resolveHeaders) can still
+  // override what we send. OpenRouter reads HTTP-Referer/X-Title for its
+  // dashboard attribution; everyone else gets a User-Agent.
+  const headers = {
+    ...attributionHeaders(ALIASES[provider] ?? provider),
+    ...def.headers,
+    ...def.resolveHeaders?.(apiKey),
+  }
 
   const settings = {
     apiKey,
@@ -745,6 +768,7 @@ export async function fetchOpenRouterCatalog(): Promise<CatalogModel[]> {
   const started = (async (): Promise<CatalogModel[]> => {
     try {
       const response = await fetch(CATALOG_URL, {
+        headers: attributionHeaders("openrouter"),
         signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS),
       })
       if (!response.ok) return []
@@ -799,19 +823,104 @@ export type VerifyKeyResult = { ok: true } | { ok: false; error: string }
 /** Max time a verification request may run before we give up on it. */
 const VERIFY_TIMEOUT_MS = 10_000
 
+/** The `anthropic-version` every Anthropic REST call must carry. */
+const ANTHROPIC_VERSION = "2023-06-01"
+
 /**
- * The cheapest authenticated GET each provider accepts. Used by /connect to
- * confirm a pasted key actually works before saving it, so a typo never lands
- * in config and silently breaks every later turn.
+ * API bases for providers whose registry entry has no `baseURL` because the
+ * SDK already knows the default.
  *
- * Strategy per provider:
- *  - anthropic:    GET /v1/models with `x-api-key` + `anthropic-version`.
- *  - openrouter:   GET /v1/key with `Authorization: Bearer` (returns key info).
- *  - openai/zai/moonshot/opencode and any OpenAI-compatible custom gateway:
- *                  GET <base>/models with `Authorization: Bearer`.
- *  - ollama:       no key required; verify by probing the daemon's /api/tags.
- *  - codex:        reuses a ChatGPT login token (not an API key); /connect
- *                  cannot verify it cheaply, so it is trusted as-is.
+ * Verification talks to the REST API directly, so it needs the URL spelled
+ * out. Without this, `anthropic` and `openai` fall through with an empty base
+ * and their keys are accepted unverified — the exact typo /connect exists to
+ * catch.
+ */
+const VERIFY_BASE: Record<string, string> = {
+  anthropic: "https://api.anthropic.com/v1",
+  openai: "https://api.openai.com/v1",
+}
+
+/** One authenticated GET: where it goes and what it carries. */
+export interface VerifyEndpoint {
+  url: string
+  headers: Record<string, string>
+}
+
+/**
+ * The cheapest authenticated GET a provider accepts, or undefined when there
+ * is nothing to check against.
+ *
+ * Split out from the request itself so the per-provider URL and auth-header
+ * shape can be asserted directly — these are easy to get subtly wrong (a
+ * bearer token where a provider wants `x-api-key`, `/v1/v1/models` from a
+ * doubled base) and every mistake looks identical from the dialog: "the
+ * provider rejected the key".
+ *
+ * Per provider:
+ *  - anthropic:  GET {base}/models, `x-api-key` + `anthropic-version`.
+ *  - openrouter: GET {base}/key — the key-info endpoint, cheaper than /models
+ *                and, unlike it, actually authenticated.
+ *  - openai, zai, moonshot, opencode, and any OpenAI-compatible gateway:
+ *                GET {base}/models with `Authorization: Bearer`.
+ *
+ * Not handled here: `ollama` (keyless — a daemon reachability probe) and
+ * `codex` (a ChatGPT login token, not an API key). `verifyProviderKey` takes
+ * those before it gets this far.
+ */
+export function verifyEndpoint(
+  provider: string,
+  apiKey: string,
+  baseURL?: string,
+): VerifyEndpoint | undefined {
+  const canonical = ALIASES[provider] ?? provider
+  const def = PROVIDERS[canonical]
+
+  const override = (baseURL ?? "").trim()
+  const base = (
+    override ||
+    def?.baseURL ||
+    def?.resolveBaseURL?.() ||
+    VERIFY_BASE[canonical] ||
+    ""
+  )
+    .trim()
+    // A user-typed base URL often arrives with a trailing slash; joining onto
+    // it unstripped produces "…/v1//models", which some gateways 404.
+    .replace(/\/+$/, "")
+
+  // A custom provider with no base URL at all: nothing to check against, so
+  // the key is trusted rather than blocking the connect flow.
+  if (base === "") return undefined
+
+  const attribution = attributionHeaders(canonical)
+
+  if (canonical === "anthropic") {
+    return {
+      url: `${base}/models`,
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        ...attribution,
+      },
+    }
+  }
+
+  if (canonical === "openrouter") {
+    return {
+      url: `${base}/key`,
+      headers: { Authorization: `Bearer ${apiKey}`, ...attribution },
+    }
+  }
+
+  return {
+    url: `${base}/models`,
+    headers: { Authorization: `Bearer ${apiKey}`, ...attribution },
+  }
+}
+
+/**
+ * Confirm a pasted key actually works before /connect saves it, so a typo
+ * never lands in config and silently breaks every later turn.
  *
  * A 2xx response means the key is good. 401/403 means the provider rejected
  * it. Anything else (network failure, timeout, unexpected status) is reported
@@ -823,17 +932,15 @@ export async function verifyProviderKey(
   baseURL?: string,
 ): Promise<VerifyKeyResult> {
   const canonical = ALIASES[provider] ?? provider
-  const def = PROVIDERS[canonical]
 
   // Codex reuses a ChatGPT login token; there is no cheap API-key check.
   if (canonical === "codex") return { ok: true }
 
-  const override = (baseURL ?? "").trim()
-  const base = (override || def?.baseURL || def?.resolveBaseURL?.() || "").trim()
-
   // Ollama is keyless; verification is a daemon reachability probe.
   if (canonical === "ollama") {
-    const target = base || ollamaTarget().baseURL
+    const def = PROVIDERS[canonical]
+    const target =
+      (baseURL ?? "").trim() || def?.resolveBaseURL?.() || ollamaTarget().baseURL
     const reachable = await probeOllama(target)
     return reachable
       ? { ok: true }
@@ -842,9 +949,11 @@ export async function verifyProviderKey(
 
   if (apiKey.trim() === "") return { ok: false, error: "API key is empty." }
 
+  const endpoint = verifyEndpoint(provider, apiKey.trim(), baseURL)
+  if (endpoint === undefined) return { ok: true }
+
   try {
-    const outcome = await probeKey(canonical, def, apiKey.trim(), base)
-    return outcome
+    return await probeKey(endpoint)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return { ok: false, error: `Could not verify the key: ${msg}` }
@@ -852,58 +961,24 @@ export async function verifyProviderKey(
 }
 
 /**
- * One authenticated GET, classifying the response. Never throws — network
- * errors are caught by the caller and surfaced as error strings.
+ * One authenticated GET, classifying the response.
+ *
+ * Only the status matters, so the body is cancelled unread — a /models
+ * listing can be hundreds of kilobytes and nothing here parses it.
  */
-async function probeKey(
-  canonical: string,
-  def: ProviderDef | undefined,
-  apiKey: string,
-  base: string,
-): Promise<VerifyKeyResult> {
-  let url: string
-  let headers: Record<string, string>
-
-  switch (canonical) {
-    case "anthropic": {
-      url = `${base || "https://api.anthropic.com/v1"}/models`
-      headers = { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
-      break
-    }
-    case "openrouter": {
-      url = `${base || "https://openrouter.ai/api/v1"}/key`
-      headers = { Authorization: `Bearer ${apiKey}`, ...(def?.headers ?? {}) }
-      break
-    }
-    default: {
-      // openai, zai, moonshot, opencode, and any custom OpenAI-compatible
-      // gateway: GET <base>/models with a bearer token.
-      if (base === "") {
-        // No endpoint to check against (a custom provider with no baseURL);
-        // trust the key rather than blocking the connect flow.
-        return { ok: true }
-      }
-      url = `${base.replace(/\/+$/, "")}/models`
-      headers = { Authorization: `Bearer ${apiKey}`, ...(def?.headers ?? {}) }
-      break
-    }
-  }
-
+async function probeKey(endpoint: VerifyEndpoint): Promise<VerifyKeyResult> {
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await fetch(endpoint.url, {
       method: "GET",
-      headers,
+      headers: endpoint.headers,
       signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return { ok: false, error: `Network error verifying the key: ${msg}` }
-  } finally {
-    // Drop the body promptly; we only care about the status.
   }
 
-  // Cancel any body stream without reading it.
   try {
     await response.body?.cancel()
   } catch {
@@ -916,6 +991,6 @@ async function probeKey(
   }
   return {
     ok: false,
-    error: `Unexpected response (HTTP ${response.status}) from ${url}.`,
+    error: `Unexpected response (HTTP ${response.status}) from ${endpoint.url}.`,
   }
 }

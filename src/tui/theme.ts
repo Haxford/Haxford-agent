@@ -59,6 +59,14 @@ export interface Theme {
   diffDel: string
   diffCtx: string
 
+  /**
+   * Inline `code` spans in rendered markdown.
+   *
+   * A foreground colour, not a background: every literal background choice is
+   * wrong on half the terminals out there, which is the exact trap this file
+   * exists to avoid.
+   */
+  codeSpan: string
   /** The user's own words. */
   user: string
   /** Tool icon glyph when the call is healthy. */
@@ -91,6 +99,7 @@ export const dark: Theme = {
   diffDel: "red",
   diffCtx: "gray",
 
+  codeSpan: "cyan",
   user: "green",
   toolIcon: "cyan",
 }

@@ -458,6 +458,20 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     // mode build -> auto -> plan -> build (opencode-style). The host owns the
     // actual mode state and rerenders. Skip when the autocomplete popup is up
     // (the Composer routes tab to the popup instead).
+    // ctrl+o expands or collapses tool output across the whole transcript —
+    // pi's binding and pi's model. One global switch rather than a per-row
+    // cursor: tool calls are scanned, not navigated, so the useful states are
+    // "the tight list" and "all of it", not "this one row".
+    if (key.ctrl && input === "o") {
+      const next = store.setToolsExpanded(!store.getState().toolsExpanded)
+      showHint(next ? "tool output expanded" : "tool output collapsed")
+      // @inkjs/ui's TextInput filters exactly one chord out of its own input
+      // handler — ctrl+c — and inserts everything else as a character, so a
+      // bare ctrl+o would leave a stray "o" in the composer. Reseeding with
+      // the value the composer already had remounts the input and drops it.
+      composerRef.current?.set(composerValue)
+      return
+    }
     if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker && !ui.showConnect) {
       changeMode(nextMode(mode))
     }
@@ -697,10 +711,17 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
         so everything after it must be the only live content — which this
         ordering already guarantees.
       */}
-      <Static key={state.epoch} items={finalized}>
+      {/*
+        The key carries the expansion flag as well as the epoch. <Static>
+        prints each item once and never re-renders it, so without the remount
+        a ctrl+o would only reach the live tail and leave every settled tool
+        call at its old size — a toggle that visibly applies to some of the
+        screen is worse than one that applies to none of it.
+      */}
+      <Static key={`${state.epoch}:${state.toolsExpanded ? "x" : "c"}`} items={finalized}>
         {(m) => (
           <Box key={m.id} flexDirection="column" marginTop={1}>
-            <MessageView message={m} />
+            <MessageView message={m} toolsExpanded={state.toolsExpanded} />
           </Box>
         )}
       </Static>
@@ -712,7 +733,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
 
         {live.length > 0 || state.notices.length > 0 ? (
           <Box marginTop={finalized.length > 0 ? 1 : 0}>
-            <Transcript messages={live} notices={state.notices} />
+            <Transcript messages={live} notices={state.notices} toolsExpanded={state.toolsExpanded} />
           </Box>
         ) : null}
 

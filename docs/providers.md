@@ -1,6 +1,6 @@
 # Providers
 
-haxford resolves models through eight built-in providers. A model is always referenced as a `"provider/model"` spec — the spec splits on the **first** slash, so model ids may themselves contain slashes (e.g. `openrouter/anthropic/claude-sonnet-5`). The default spec is `anthropic/claude-sonnet-5`, overridable with `HAXFORD_MODEL`, the `-m`/`--model` flag, or the `model` config key.
+haxford resolves models through eight built-in providers. A model is always referenced as a `"provider/model"` spec — the spec splits on the **first** slash, so model ids may themselves contain slashes (e.g. `openrouter/anthropic/claude-sonnet-5`). The default spec is `openrouter/deepseek/deepseek-chat-v3.1` (a live OpenRouter model, ~10x cheaper than Claude Sonnet), overridable with `HAXFORD_MODEL`, the `-m`/`--model` flag, or the `model` config key.
 
 ## Built-in providers
 
@@ -45,6 +45,56 @@ The `codex` provider reuses a ChatGPT login performed by the `codex` CLI. haxfor
 A refresh that fails changes nothing: the stored token is used as-is, the provider returns 401 as before, and `codex login` still fixes it. `resolveModel` is synchronous, so it returns the stored token immediately and refreshes in the background — the *next* turn's resolution picks up the rotated token. Await `ensureCodexAuth()` instead where a refresh must complete first.
 
 The token endpoint and client id default to the public values the `codex` CLI uses; override them with `CODEX_OAUTH_TOKEN_URL` and `CODEX_OAUTH_CLIENT_ID` if they ever change.
+
+## /connect
+
+`/connect` walks a provider through to a working credential without leaving the TUI: pick a provider, paste a key, optionally give a base URL. The key is **verified with a live request before it is saved**, so a typo cannot land in config and quietly break every later turn.
+
+The dialog masks the key at every stage — it never appears in a rendered frame, including in error messages.
+
+### What gets verified
+
+The cheapest authenticated `GET` each provider accepts:
+
+| Provider | Verification request | Auth header |
+|---|---|---|
+| `anthropic` | `GET https://api.anthropic.com/v1/models` | `x-api-key` + `anthropic-version: 2023-06-01` |
+| `openai` | `GET https://api.openai.com/v1/models` | `Authorization: Bearer` |
+| `openrouter` | `GET https://openrouter.ai/api/v1/key` | `Authorization: Bearer` |
+| `zai` | `GET https://api.z.ai/api/paas/v4/models` | `Authorization: Bearer` |
+| `moonshot` | `GET https://api.moonshot.ai/v1/models` | `Authorization: Bearer` |
+| `opencode` | `GET https://opencode.ai/zen/v1/models` | `Authorization: Bearer` |
+| `ollama` | `GET <host>/api/tags` (reachability, no key) | — |
+| `codex` | none — trusted as-is | — |
+
+OpenRouter uses its key-info endpoint rather than `/models`, which is unauthenticated there and would accept any string. A `baseURL` override replaces the base for whichever provider you give it (a trailing slash is trimmed), so a custom OpenAI-compatible gateway is verified at `<base>/models`. A custom provider with **no** base URL has nothing to check against and is trusted.
+
+`codex` is exempt because it reuses a ChatGPT login token rather than an API key — see [above](#codex-chatgpt-login).
+
+### How outcomes are classified
+
+- **2xx** — the key works. It is written to the *global* config (`~/.config/haxford/haxford.json`, `chmod 600`), never to project config, and takes effect immediately: the provider's models stop being greyed out without a restart. Connecting `openrouter` also re-fetches the live catalog, bypassing the one-hour cache, so models the new key unlocks appear right away.
+- **401 / 403** — the provider rejected the key. The dialog stays open with the error inline so you can re-edit and resubmit.
+- **Anything else** (network failure, timeout, unexpected status) — reported as an error naming the status and the URL. Verification never throws.
+
+On success the TUI shows a transient `<provider> connected` status hint for ~2s. It is deliberately *not* a transcript notice: notices persist above the next agent reply and read as something the agent said.
+
+## Attribution
+
+Every outbound request identifies this client. OpenRouter reads `HTTP-Referer` and `X-Title`, which drive the per-app attribution on your OpenRouter dashboard:
+
+```
+HTTP-Referer: https://haxford.dev/haxford-agent
+X-Title: Haxford-Agent
+```
+
+Every other provider gets a conventional `User-Agent` instead:
+
+```
+User-Agent: Haxford-Agent/0.1.0 (+https://haxford.dev/haxford-agent)
+```
+
+This applies to model calls, `/connect` verification, the OpenRouter catalog fetch, and the Ollama reachability probe alike. The name, URL, and version live in `src/providers/attribution.ts` and are not spelled out anywhere else; a provider definition's own `headers` still win if it sets the same key.
 
 ## Model picker
 

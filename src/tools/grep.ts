@@ -55,8 +55,11 @@ async function ripgrep(
     "--line-number",
     "--no-heading",
     "--color=never",
+    // Ask for one extra match: some rg builds cap --max-count globally
+    // instead of per-file, which would hide truncation from us otherwise.
+    // Truncation is detected by matches.length > limit downstream.
     "--max-count",
-    String(limit),
+    String(limit + 1),
   ]
   if (include) cmd.push("--glob", include)
   cmd.push("-e", pattern, root)

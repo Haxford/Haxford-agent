@@ -23,6 +23,14 @@ export interface TuiStore {
    * mode switches play via the persistent status bar, but time-boxed.
    */
   setHint(text: string, ttlMs?: number): void
+  /**
+   * Expand or collapse tool output across the whole transcript.
+   *
+   * Returns the state it settled on, so a caller that toggles can report it
+   * without a second read. A no-op call (setting the value it already holds)
+   * does not notify.
+   */
+  setToolsExpanded(expanded: boolean): boolean
   /** subscribe(listener) -> unsubscribe; fires only on actual state changes. */
   subscribe(listener: () => void): () => void
 }
@@ -67,7 +75,10 @@ export function createTuiStore(initial: Message[]): TuiStore {
         clearTimeout(hintTimer)
         hintTimer = undefined
       }
-      state = { ...fromMessages(messages), epoch }
+      // toolsExpanded rides through: it is a view preference, not session
+      // data, and having /clear silently re-collapse everything would be a
+      // small betrayal of a setting the user just chose.
+      state = { ...fromMessages(messages), epoch, toolsExpanded: state.toolsExpanded }
       notify()
     },
 
@@ -90,6 +101,13 @@ export function createTuiStore(initial: Message[]): TuiStore {
         if (hintTimer === timer) hintTimer = undefined
       }, ttlMs)
       hintTimer = timer
+    },
+
+    setToolsExpanded(expanded: boolean): boolean {
+      if (state.toolsExpanded === expanded) return expanded
+      state = { ...state, toolsExpanded: expanded }
+      notify()
+      return expanded
     },
 
     subscribe(listener: () => void): () => void {

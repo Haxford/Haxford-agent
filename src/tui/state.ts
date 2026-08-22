@@ -35,6 +35,16 @@ export interface TuiState {
    */
   hint?: string
   /**
+   * Whether tool output is expanded transcript-wide.
+   *
+   * pi's model, and the right one: one global toggle (ctrl+o) rather than a
+   * per-row cursor. Tool calls are scanned, not navigated — you want either a
+   * tight list of what happened or the full detail of all of it, and picking
+   * rows one at a time is a cost with no matching benefit. Set via
+   * `store.setToolsExpanded()`, not an AgentEvent (the contract is frozen).
+   */
+  toolsExpanded: boolean
+  /**
    * Session generation. Bumped by the store on every `reset()` (i.e. /clear or
    * a resume). The transcript keys its `<Static>` region on this so Ink
    * remounts it instead of re-printing a shrunk item list — see
@@ -49,6 +59,7 @@ export const initialTuiState: TuiState = {
   status: "idle",
   usage: { input: 0, output: 0, reasoning: 0 },
   notices: [],
+  toolsExpanded: false,
   epoch: 0,
   hint: undefined,
 }

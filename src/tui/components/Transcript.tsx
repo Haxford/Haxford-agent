@@ -2,8 +2,14 @@ import { Box, Text } from "ink"
 import React from "react"
 
 import type { ImagePart, Message, Part, ReasoningPart, TextPart, ToolPart } from "../../types/message.ts"
+import { separatorBefore } from "../layout.ts"
 import { railProps, theme } from "../theme.ts"
+import { COLLAPSED_DIFF_LINES, DiffView, isDiffLike, MAX_DIFF_LINES } from "./Diff.tsx"
+import { Markdown } from "./Markdown.tsx"
 import { Spinner } from "./Spinner.tsx"
+
+/** Re-exported so existing importers keep one place to reach for the rule. */
+export { separatorBefore }
 
 /** Visible status glyph + color for a tool part. */
 function toolGlyph(state: ToolPart["state"]): { glyph: string; color: string } {
@@ -19,18 +25,32 @@ function toolGlyph(state: ToolPart["state"]): { glyph: string; color: string } {
   }
 }
 
-/** How many output lines a collapsed tool block shows before summarising. */
-export const MAX_PREVIEW_LINES = 10
+/**
+ * Output lines a collapsed tool call shows.
+ *
+ * Three, not ten: collapsed is meant to answer "what happened" in a row you
+ * scan past, and anything longer stops being a summary and starts being a
+ * short version of the thing you collapsed. The full text is one ctrl+o away.
+ */
+export const COLLAPSED_PREVIEW_LINES = 3
+
+/**
+ * Output lines an expanded tool call shows.
+ *
+ * A cap, not a budget — expanded means "show me everything", but a 40k-line
+ * file read would take the terminal with it, so there is still a ceiling and
+ * it still says when it truncates.
+ */
+export const EXPANDED_PREVIEW_LINES = 200
 
 /**
  * First `max` non-empty lines of a block of text, with an overflow footer.
  *
- * Matches the collapse budget every reference harness converged on (~10 lines
- * plus an explicit "there is more" hint). Truncating to three lines with no
- * affordance — the previous behaviour — was the worst of both: too little to
- * be useful, no way to see the rest.
+ * Blank lines are dropped before counting: tool output is padded with them
+ * far more often than it is meaningfully spaced by them, and spending a
+ * three-line budget on whitespace is how a preview ends up saying nothing.
  */
-export function previewLines(text: string, max = MAX_PREVIEW_LINES): string[] {
+export function previewLines(text: string, max = COLLAPSED_PREVIEW_LINES): string[] {
   const lines = text.split("\n").map((l) => l.trimEnd()).filter((l) => l.length > 0)
   if (lines.length === 0) return []
   const shown = lines.slice(0, max)
@@ -48,7 +68,7 @@ export function partIsMultiline(part: Part): boolean {
   if (part.type === "text") return part.text.includes("\n")
   if (part.type === "reasoning") return part.text.includes("\n")
   if (part.type === "image") return false
-  return previewLines(toolOutput(part)).length > 0
+  return toolOutput(part).trim().length > 0
 }
 
 /** The text a tool part previews, if any. */
@@ -56,24 +76,6 @@ function toolOutput(part: ToolPart): string {
   if (part.state.status === "completed") return part.state.output
   if (part.state.status === "error") return part.state.error
   return ""
-}
-
-/**
- * Blank lines to insert before an item, given whether it and its predecessor
- * are multi-line.
- *
- * opencode's rule, and the single biggest source of visual rhythm: a run of
- * one-line tool calls packs into a tight scannable stack, while anything with
- * a body gets air around it. A uniform `gap={1}` spaces everything equally,
- * which is the same as spacing nothing — that flatness is what read as
- * "minimal and plain".
- */
-export function separatorBefore(
-  prevMultiline: boolean | undefined,
-  curMultiline: boolean,
-): 0 | 1 {
-  if (prevMultiline === undefined) return 0
-  return prevMultiline || curMultiline ? 1 : 0
 }
 
 /** A collapsed, one-line tool call. */
@@ -101,32 +103,82 @@ function ToolRow({ part }: { part: ToolPart }): React.ReactElement {
  * it groups, it does not announce. A bright rail on every tool call is exactly
  * the loud-but-plain trap. Errors are the one case that earns a coloured rail.
  */
-function ToolBlock({ part, lines }: { part: ToolPart; lines: string[] }): React.ReactElement {
+function ToolBlock({
+  part,
+  children,
+}: {
+  part: ToolPart
+  children: React.ReactNode
+}): React.ReactElement {
   const failed = part.state.status === "error"
   return (
     <Box flexDirection="column" {...railProps(failed ? theme.error : theme.rail, !failed)} paddingLeft={1}>
       <ToolRow part={part} />
       <Box flexDirection="column" paddingLeft={2}>
-        {lines.map((line, i) => (
-          <Text key={i} color={failed ? theme.error : undefined} dimColor={!failed} wrap="truncate-end">
-            {line}
-          </Text>
-        ))}
+        {children}
       </Box>
     </Box>
   )
 }
 
+/**
+ * Whether a tool part shows its full detail right now.
+ *
+ * A running call is always expanded regardless of the global toggle: it is the
+ * one thing on screen you are actively waiting on, and collapsing live
+ * progress to a summary line hides the only information that is changing.
+ */
+export function toolIsExpanded(part: ToolPart, toolsExpanded: boolean): boolean {
+  return toolsExpanded || part.state.status === "running"
+}
+
 /** Dispatch a tool part to its one-line or rail-block form. */
-function ToolView({ part }: { part: ToolPart }): React.ReactElement {
-  const lines = previewLines(toolOutput(part))
-  if (lines.length === 0) return <ToolRow part={part} />
-  return <ToolBlock part={part} lines={lines} />
+function ToolView({
+  part,
+  toolsExpanded,
+}: {
+  part: ToolPart
+  toolsExpanded: boolean
+}): React.ReactElement {
+  const output = toolOutput(part)
+  if (output.trim().length === 0) return <ToolRow part={part} />
+
+  const expanded = toolIsExpanded(part, toolsExpanded)
+  const failed = part.state.status === "error"
+
+  // A diff is rendered as a diff whether collapsed or not — it is the shape
+  // that carries the meaning, so degrading it to grey text would lose more
+  // than the lines saved.
+  if (isDiffLike(output)) {
+    return (
+      <ToolBlock part={part}>
+        <DiffView
+          text={output}
+          max={expanded ? MAX_DIFF_LINES : COLLAPSED_DIFF_LINES}
+          compact={!expanded}
+        />
+      </ToolBlock>
+    )
+  }
+
+  const lines = previewLines(output, expanded ? EXPANDED_PREVIEW_LINES : COLLAPSED_PREVIEW_LINES)
+  return (
+    <ToolBlock part={part}>
+      {lines.map((line, i) => (
+        <Text key={i} color={failed ? theme.error : undefined} dimColor={!failed} wrap="truncate-end">
+          {line}
+        </Text>
+      ))}
+    </ToolBlock>
+  )
 }
 
 function TextBlock({ part, role }: { part: TextPart; role: Message["role"] }): React.ReactElement {
   if (role === "user") {
-    // The user's own words, marked by a single coloured chevron.
+    // The user's own words, marked by a single coloured chevron — and left
+    // exactly as typed. Rendering the user's markdown would mean showing them
+    // something other than what they wrote, which is the one place a prettier
+    // transcript is the wrong trade.
     return (
       <Box flexDirection="column">
         {part.text.split("\n").map((line, i) => (
@@ -138,7 +190,7 @@ function TextBlock({ part, role }: { part: TextPart; role: Message["role"] }): R
       </Box>
     )
   }
-  return <Text wrap="wrap">{part.text}</Text>
+  return <Markdown text={part.text} />
 }
 
 function ReasoningBlock({ part }: { part: ReasoningPart }): React.ReactElement {
@@ -154,11 +206,19 @@ function ReasoningBlock({ part }: { part: ReasoningPart }): React.ReactElement {
 }
 
 /** Render one part in its appropriate form. */
-function PartView({ part, role }: { part: Part; role: Message["role"] }): React.ReactElement {
+function PartView({
+  part,
+  role,
+  toolsExpanded,
+}: {
+  part: Part
+  role: Message["role"]
+  toolsExpanded: boolean
+}): React.ReactElement {
   if (part.type === "text") return <TextBlock part={part} role={role} />
   if (part.type === "reasoning") return <ReasoningBlock part={part} />
   if (part.type === "image") return <ImageChip part={part} />
-  return <ToolView part={part} />
+  return <ToolView part={part} toolsExpanded={toolsExpanded} />
 }
 
 /** Inline placeholder for an attached image (terminals can't render pixels). */
@@ -177,7 +237,14 @@ function ImageChip({ part }: { part: ImagePart }): React.ReactElement {
   )
 }
 
-export function MessageView({ message }: { message: Message }): React.ReactElement {
+export function MessageView({
+  message,
+  toolsExpanded = false,
+}: {
+  message: Message
+  /** Global tool-output expansion (ctrl+o). */
+  toolsExpanded?: boolean
+}): React.ReactElement {
   // Adaptive spacing between parts: `gap` is gone in favour of a per-item
   // margin derived from whether the neighbours have bodies.
   let prevMultiline: boolean | undefined
@@ -189,7 +256,7 @@ export function MessageView({ message }: { message: Message }): React.ReactEleme
         prevMultiline = multiline
         return (
           <Box key={part.id} flexDirection="column" marginTop={marginTop}>
-            <PartView part={part} role={message.role} />
+            <PartView part={part} role={message.role} toolsExpanded={toolsExpanded} />
           </Box>
         )
       })}
@@ -214,6 +281,8 @@ export interface TranscriptProps {
   messages: Message[]
   /** Optional dimmed system notices (newest last); rendered above the composer. */
   notices?: string[]
+  /** Global tool-output expansion (ctrl+o). */
+  toolsExpanded?: boolean
 }
 
 /**
@@ -223,7 +292,7 @@ export interface TranscriptProps {
  * so this component re-renders at streaming rate over one message rather than
  * the whole history.
  */
-export function Transcript({ messages, notices }: TranscriptProps): React.ReactElement {
+export function Transcript({ messages, notices, toolsExpanded = false }: TranscriptProps): React.ReactElement {
   let prevMultiline: boolean | undefined
   return (
     <Box flexDirection="column">
@@ -233,7 +302,7 @@ export function Transcript({ messages, notices }: TranscriptProps): React.ReactE
         prevMultiline = multiline
         return (
           <Box key={m.id} flexDirection="column" marginTop={marginTop}>
-            <MessageView message={m} />
+            <MessageView message={m} toolsExpanded={toolsExpanded} />
           </Box>
         )
       })}

@@ -44,7 +44,7 @@ Usage:
   haxford -p "<prompt>"        Print mode: non-interactive, streams to stdout
 
 Options:
-  -m, --model <spec>           provider/model (default: config or anthropic/claude-sonnet-5)
+  -m, --model <spec>           provider/model (default: config or deepseek/deepseek-chat-v3.1)
       --mode <mode>            build | auto | plan  (default: build)
   -p, --print                  Non-interactive print mode
   -c, --continue               Resume latest session

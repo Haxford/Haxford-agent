@@ -22,12 +22,12 @@ An `AGENTS.md` in the project root is read verbatim and appended to the system p
 
 ```json
 {
-  "model": "anthropic/claude-sonnet-5",
+  "model": "deepseek/deepseek-chat-v3.1",
   "providers": {
     "openrouter": {
       "apiKey": "sk-or-...",
       "baseURL": "https://openrouter.ai/api/v1",
-      "models": ["anthropic/claude-sonnet-5", "openai/gpt-5.2"]
+      "models": ["deepseek/deepseek-chat-v3.1", "anthropic/claude-sonnet-5", "openai/gpt-5.2"]
     }
   },
   "permission": {
@@ -50,7 +50,7 @@ An `AGENTS.md` in the project root is read verbatim and appended to the system p
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `model` | string | `anthropic/claude-sonnet-5` | `"provider/model"` spec. Overridden by `-m`/`--model` or `HAXFORD_MODEL`. |
+| `model` | string | `deepseek/deepseek-chat-v3.1` | `"provider/model"` spec. Overridden by `-m`/`--model` or `HAXFORD_MODEL`. |
 | `providers` | object | — | Per-provider overrides. See below. |
 | `permission` | object | — | [Permission rules](permissions.md#rules). |
 | `maxTurns` | number | `100` | Max loop turns per prompt before the run stops with reason `max_turns`. |
