@@ -147,6 +147,14 @@ Usage:
       })
 
       const kill = () => {
+        // Orphaned grandchildren (e.g. `sleep` under `bash -c`) keep the
+        // stdio pipes open and would hang the drains below — reap them
+        // BEFORE the shell exits, then kill the shell itself.
+        try {
+          Bun.spawnSync(["pkill", "-9", "-P", String(proc.pid)])
+        } catch {
+          // Best-effort only.
+        }
         try {
           proc.kill()
         } catch {
