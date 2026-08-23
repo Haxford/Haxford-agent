@@ -54,20 +54,33 @@ describe("footer composition", () => {
     expect(footerLeft("", "dev")).toBe("dev")
   })
 
-  test("right half reads ctx N% (mode) · model • cost", () => {
+  test("right half reads <tokens> (pct) · cost · model", () => {
     expect(
-      footerRight({ mode: "build", model: "anthropic/claude-sonnet-5", pct: 12, cost: 0.087 }),
-    ).toBe("ctx 12% (build) · claude-sonnet-5 • $0.0870")
+      footerRight({ model: "anthropic/claude-sonnet-5", ctxTokens: 76_200, pct: 38, cost: 0.0123 }),
+    ).toBe("76.2K (38%) · $0.0123 · claude-sonnet-5")
   })
 
-  test("no limit means no ctx figure but the mode stays", () => {
-    expect(footerRight({ mode: "plan", model: "a/b" })).toBe("(plan) · b")
+  test("no limit means no percent, but the token figure stays", () => {
+    expect(footerRight({ model: "a/b", ctxTokens: 76_200 })).toBe("76.2K · b")
   })
 
   test("an unpriced session shows no cost segment", () => {
-    const right = footerRight({ mode: "auto", model: "z-ai/glm-5.2", pct: 0 })
-    expect(right).toBe("ctx 0% (auto) · glm-5.2")
+    const right = footerRight({ model: "z-ai/glm-5.2", ctxTokens: 4_000, pct: 3 })
+    expect(right).toBe("4.0K (3%) · glm-5.2")
     expect(right).not.toContain("$")
+  })
+
+  test("before any usage is reported there is no token figure at all", () => {
+    // An honest blank beats a confident 0 for a number nobody has measured.
+    expect(footerRight({ model: "a/b" })).toBe("b")
+    expect(footerRight({ model: "a/b", ctxTokens: 0, pct: 0 })).toBe("b")
+  })
+
+  test("millions keep the same uppercase scale as thousands", () => {
+    expect(footerRight({ model: "a/b", ctxTokens: 1_500_000, pct: 75 })).toBe(
+      "1.5M (75%) · b",
+    )
+    expect(footerRight({ model: "a/b", ctxTokens: 940, pct: 1 })).toBe("940 (1%) · b")
   })
 })
 
@@ -83,19 +96,22 @@ describe("StatusBar.modeBadge", () => {
 
 describe("StatusBar.contextPercent", () => {
   test("undefined when limit is undefined or zero", () => {
-    expect(contextPercent({ input: 100, output: 0, reasoning: 0 })).toBeUndefined()
-    expect(contextPercent({ input: 100, output: 0, reasoning: 0 }, 0)).toBeUndefined()
+    expect(contextPercent(100)).toBeUndefined()
+    expect(contextPercent(100, 0)).toBeUndefined()
   })
   test("0 when nothing used", () => {
-    expect(contextPercent({ input: 0, output: 0, reasoning: 0 }, 200_000)).toBe(0)
+    expect(contextPercent(0, 200_000)).toBe(0)
   })
   test("rounds to a percent, capped at 100", () => {
-    expect(contextPercent({ input: 100_000, output: 0, reasoning: 0 }, 200_000)).toBe(50)
-    expect(contextPercent({ input: 150_000, output: 0, reasoning: 0 }, 200_000)).toBe(75)
-    expect(contextPercent({ input: 300_000, output: 0, reasoning: 0 }, 200_000)).toBe(100)
+    expect(contextPercent(100_000, 200_000)).toBe(50)
+    expect(contextPercent(150_000, 200_000)).toBe(75)
+    expect(contextPercent(300_000, 200_000)).toBe(100)
   })
-  test("counts reasoning toward used", () => {
-    expect(contextPercent({ input: 100_000, output: 0, reasoning: 50_000 }, 200_000)).toBe(75)
+  test("measures the window, not the session total", () => {
+    // Three turns of a 40K prompt is still a 40K window. The old signature
+    // took cumulative TotalUsage and divided that by the limit, which is what
+    // sent the figure to 100% after a couple of turns.
+    expect(contextPercent(40_000, 200_000)).toBe(20)
   })
 })
 

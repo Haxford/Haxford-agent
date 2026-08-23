@@ -1,4 +1,5 @@
 import { Box, Static, Text, useInput, useStdout } from "ink"
+import type { KittyFlagName } from "ink"
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
 import type { Message } from "../types/message.ts"
@@ -52,10 +53,23 @@ export { HELP_TEXT }
  * place to bracket a frame is the stream it writes to — see `raw.ts`. Passing
  * these options is therefore what makes the live region redraw atomically
  * instead of visibly erasing and repainting at streaming rates.
+ *
+ * `kittyKeyboard` opts into Ink's own Kitty keyboard protocol negotiation —
+ * `mode: "auto"` queries the terminal (`CSI ? u`, 200ms timeout) before
+ * sending the enable sequence, so an unsupporting terminal is left alone
+ * entirely, and Ink pops the protocol on unmount and around any suspend.
+ * `disambiguateEscapeCodes` is the one flag the composer actually needs: it's
+ * what makes Shift+Enter arrive as a CSI-u sequence (decoded into `key.shift`
+ * on a `key.return` event) instead of being indistinguishable from plain
+ * Enter — see Composer.tsx.
  */
 export const INK_RENDER_OPTIONS = {
   exitOnCtrlC: false,
   stdout: synchronizedStdout(process.stdout),
+  kittyKeyboard: {
+    mode: "auto",
+    flags: ["disambiguateEscapeCodes"] satisfies KittyFlagName[],
+  },
 } as const
 
 /**
@@ -1103,6 +1117,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           status={state.status}
           usage={state.usage}
           contextLimit={contextLimit}
+          ctxTokens={state.ctxTokens}
           {...pricing}
         />
         </Box>

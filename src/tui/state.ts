@@ -21,8 +21,24 @@ export interface TuiState {
   status: RunStatus
   /** Human-readable reason for the last loop.end, if any. */
   endReason?: string
-  /** Cumulative token usage. */
+  /** Cumulative token usage. Session totals — this is what cost is billed on. */
   usage: TotalUsage
+  /**
+   * Prompt tokens in the CURRENT context window: the most recent turn's real
+   * input count, replaced each turn rather than accumulated.
+   *
+   * Separate from `usage` because the two answer different questions. Cost is
+   * "what have I spent", which sums every turn. Context pressure is "how full
+   * is the window right now", which is a level, not a total — each request
+   * re-sends the conversation, so the same 40K prompt billed three times is
+   * still one 40K window. Summing them made the ctx figure race to 100% after
+   * a couple of turns while the window was barely a fifth full.
+   *
+   * Zero until a turn reports usage. A turn reporting 0 input (a provider that
+   * does not count) leaves the last known-good figure standing rather than
+   * blanking the display.
+   */
+  ctxTokens: number
   /** Last error message emitted via { type: "error" }. */
   error?: string
   /** Informational system notes (newest last), capped at 50. */
@@ -68,6 +84,7 @@ export const initialTuiState: TuiState = {
   turn: 0,
   status: "idle",
   usage: { input: 0, output: 0, reasoning: 0 },
+  ctxTokens: 0,
   notices: [],
   toolsExpanded: false,
   epoch: 0,
@@ -175,17 +192,27 @@ export function reduce(state: TuiState, event: AgentEvent): TuiState {
 
     case "usage": {
       const u: TokenUsage = event.usage
+      // Cumulative: what the session has spent.
       const usage: TotalUsage = {
         input: state.usage.input + (u.input ?? 0),
         output: state.usage.output + (u.output ?? 0),
         reasoning: state.usage.reasoning + (u.reasoning ?? 0),
       }
+      // Level, not total: this turn's real prompt size REPLACES the last one.
+      // A provider that reports nothing keeps the previous reading rather than
+      // resetting the gauge to zero mid-session.
+      const ctxTokens = (u.input ?? 0) > 0 ? u.input : state.ctxTokens
       // Also attach usage to the originating message if present.
       const idx = findMessage(state.messages, event.messageID)
-      if (idx === -1) return { ...state, usage }
+      if (idx === -1) return { ...state, usage, ctxTokens }
       const msg = cloneMessage(state.messages[idx]!)
       msg.usage = { ...u }
-      return { ...state, usage, messages: withMessage(state.messages, idx, msg) }
+      return {
+        ...state,
+        usage,
+        ctxTokens,
+        messages: withMessage(state.messages, idx, msg),
+      }
     }
 
     case "turn.start": {
@@ -243,7 +270,19 @@ export function reduceAll(state: TuiState, events: AgentEvent[]): TuiState {
 
 /** Build a TuiState seeded with an existing message list (e.g. on resume). */
 export function fromMessages(messages: Message[]): TuiState {
-  return { ...initialTuiState, messages: messages.map(cloneMessage) }
+  // Seed the context gauge from the newest turn that reported a real input
+  // count, so a resumed session shows how full its window already is instead
+  // of reading 0% until the next turn lands. Cost totals deliberately do NOT
+  // replay: the spend figure is for this sitting.
+  let ctxTokens = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const input = messages[i]?.usage?.input
+    if (typeof input === "number" && input > 0) {
+      ctxTokens = input
+      break
+    }
+  }
+  return { ...initialTuiState, messages: messages.map(cloneMessage), ctxTokens }
 }
 
 /** A transcript split into an append-only prefix and the still-changing tail. */

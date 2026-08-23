@@ -12,11 +12,22 @@ export type Mode = "build" | "auto" | "plan"
 
 export interface StatusBarProps {
   model: string
+  /**
+   * Permission mode. Accepted but no longer rendered here — the composer's
+   * prompt glyph is the mode indicator, and the right cluster is now tokens,
+   * cost and model. Kept on the props so every caller does not change for a
+   * format tweak; see IMPROVEMENTS if it stays unread.
+   */
   mode: Mode
   status: "idle" | "running" | "ended" | "error"
   usage: TotalUsage
   /** Context window limit; percent is skipped silently when undefined. */
   contextLimit?: number
+  /**
+   * Prompt tokens in the current context window (the latest turn's real input
+   * count). Omitted or 0 hides the token figure entirely.
+   */
+  ctxTokens?: number
   /** Working directory, shown tilde-shortened on the left of the footer. */
   cwd?: string
   /** Git branch of `cwd`, probed once at startup; omitted when it cannot be resolved. */
@@ -30,11 +41,12 @@ export interface StatusBarProps {
 }
 
 /**
- * Label + color for the mode word.
+ * Label + colour for the mode word.
  *
- * The mode lives in the footer's right cluster now, wrapped in parentheses
- * after the ctx figure — pi's arrangement. It was a standalone word before;
- * the parentheses make it read as metadata attached to the numbers beside it.
+ * No longer rendered in the footer: the right cluster is now tokens, cost and
+ * model, and the composer's prompt glyph is the always-visible mode indicator
+ * (see `Composer`, which colours its rail by mode and costs zero lines). Kept
+ * as the one place mapping a mode to its label + colour.
  */
 export function modeBadge(mode: Mode): { text: string; color: string } {
   return { text: mode, color: modeColor(mode) }
@@ -91,15 +103,26 @@ export function shortModel(spec: string): string {
   return slash === -1 ? trimmed : trimmed.slice(slash + 1)
 }
 
-/** Context usage as a 0-100 percent, or undefined if unmeasurable. */
+/**
+ * How full the context window is, 0-100, or undefined when unmeasurable.
+ *
+ * Takes `ctxTokens` — the CURRENT turn's prompt size — not the session's
+ * cumulative input. Those are different quantities: every request re-sends the
+ * conversation, so three turns of a 40K prompt is still a 40K window, not
+ * 120K. Dividing the running total by the limit is what made this race to
+ * 100% after a couple of turns.
+ *
+ * Reasoning tokens are deliberately excluded: they are output, and the loop
+ * drops reasoning parts when it replays history, so they never occupy the
+ * window on the next request.
+ */
 export function contextPercent(
-  usage: TotalUsage,
+  ctxTokens: number,
   limit?: number,
 ): number | undefined {
   if (limit === undefined || limit <= 0) return undefined
-  const used = usage.input + usage.reasoning
-  if (used <= 0) return 0
-  return Math.min(100, Math.round((used / limit) * 100))
+  if (ctxTokens <= 0) return 0
+  return Math.min(100, Math.round((ctxTokens / limit) * 100))
 }
 
 /**
@@ -148,7 +171,7 @@ export function footerLeft(cwd: string | undefined, branch?: string): string {
 }
 
 /** What each piece of the footer's right cluster is, and how it is coloured. */
-export type FooterRole = "dim" | "mode" | "model" | "cost"
+export type FooterRole = "dim" | "model" | "cost"
 
 export interface FooterSegment {
   text: string
@@ -157,38 +180,52 @@ export interface FooterSegment {
 
 /**
  * The footer's right half, as ordered coloured runs:
- * `ctx N% (<mode>) · <model-short> • <$cost>`.
+ * `76.2K (38%) · $0.0123 · <model-short>`.
  *
- * The cost rides after the model, dot-separated like everything else on the
- * line; it simply does not appear when there is nothing honest to show.
- * Segments rather than one composed string because the mode word and the
- * model name are the two coloured tokens on this line — composing first and
- * re-parsing to colour would be the fragile version of the same feature.
+ * Reads left to right as "how full, how much, what is answering". The token
+ * figure leads because it is the number that moves while you work and the one
+ * that decides when compaction fires; the percent rides in parentheses beside
+ * it because a raw count means nothing without the window it is a fraction of.
+ *
+ * Each piece disappears rather than degrading: no window size known means no
+ * percent, no pricing means no cost, and no usage reported yet means no token
+ * figure at all — an honest blank beats a confident `0`.
+ *
+ * Segments rather than one composed string because the model name and the
+ * cost are coloured differently from the dim separators, and composing first
+ * then re-parsing to colour would be the fragile version of the same feature.
  */
 export function footerSegments(opts: {
-  mode: Mode
   model: string
+  /** Prompt tokens in the current window. Omitted/0 hides the whole figure. */
+  ctxTokens?: number
   pct?: number
   cost?: number
 }): FooterSegment[] {
   const segs: FooterSegment[] = []
-  // The ctx figure leads the cluster: it is the number that changes while you
-  // work, and it anchors the parenthesised mode that follows it.
-  segs.push({
-    text: opts.pct !== undefined ? `ctx ${opts.pct}% (` : "(",
-    role: "dim",
-  })
-  segs.push({ text: opts.mode, role: "mode" })
-  segs.push({ text: ")", role: "dim" })
-  const short = shortModel(opts.model)
-  if (short.length > 0) {
-    segs.push({ text: " · ", role: "dim" })
-    segs.push({ text: short, role: "model" })
+
+  const tokens = opts.ctxTokens ?? 0
+  if (tokens > 0) {
+    // Uppercase K to match the M that `formatTokens` already emits, so the
+    // two magnitudes read as one scale rather than two conventions.
+    const figure = formatTokens(tokens).toUpperCase()
+    segs.push({
+      text: opts.pct !== undefined ? `${figure} (${opts.pct}%)` : figure,
+      role: "dim",
+    })
   }
+
   if (opts.cost !== undefined) {
-    segs.push({ text: " • ", role: "dim" })
+    if (segs.length > 0) segs.push({ text: " · ", role: "dim" })
     segs.push({ text: formatCost(opts.cost), role: "cost" })
   }
+
+  const short = shortModel(opts.model)
+  if (short.length > 0) {
+    if (segs.length > 0) segs.push({ text: " · ", role: "dim" })
+    segs.push({ text: short, role: "model" })
+  }
+
   return segs
 }
 
@@ -206,8 +243,9 @@ export function footerRight(opts: Parameters<typeof footerSegments>[0]): string 
  * start screen spends exactly one row saying where you are and what is
  * answering, and that row belongs at the bottom edge, adjacent to the input
  * it describes. Left: cwd (git-branch), tilde-shortened. Right: the live
- * figures — ctx%, the permission mode in parentheses, the short model, and
- * the running cost when it is known. The busy mark leads the whole line when
+ * figures — `76.2K (38%) · $0.0123 · <model>`: how full the context window is,
+ * what the session has cost, and what is answering. The busy mark leads the
+ * whole line when
  * a run is in flight, so "is it doing something" is answered at the far left
  * where scanning starts, in a cell that is empty when idle.
  *
@@ -220,18 +258,26 @@ export function StatusBar({
   cwd,
   branch,
   model,
-  mode,
   status,
   usage,
   contextLimit,
+  ctxTokens,
   promptPricePerMtok,
   completionPricePerMtok,
 }: StatusBarProps): React.ReactElement {
-  const pct = contextPercent(usage, contextLimit)
+  const tokens = ctxTokens ?? 0
+  const pct = contextPercent(tokens, contextLimit)
+  // Cost stays on the cumulative totals — that is the one figure that is
+  // genuinely a running sum.
   const cost = sessionCost(usage, promptPricePerMtok, completionPricePerMtok)
   const running = status === "running"
   const left = footerLeft(cwd, branch)
-  const segments = footerSegments({ mode, model, pct, cost })
+  const segments = footerSegments({
+    model,
+    ctxTokens: tokens,
+    ...(pct !== undefined ? { pct } : {}),
+    ...(cost !== undefined ? { cost } : {}),
+  })
 
   return (
     <Box paddingLeft={2} gap={1}>
@@ -242,11 +288,6 @@ export function StatusBar({
       <Box flexGrow={1} justifyContent="flex-end">
         <Text>
           {segments.map((seg, i) => {
-            if (seg.role === "mode") {
-              return (
-                <Text key={i} color={modeBadge(mode).color}>{seg.text}</Text>
-              )
-            }
             if (seg.role === "model") {
               return <Text key={i} color={theme.model}>{seg.text}</Text>
             }

@@ -152,6 +152,7 @@ describe("footer composition (breadcrumb merged in)", () => {
         mode: "build",
         status: "idle",
         usage: { input: 1000, output: 0, reasoning: 0 },
+        ctxTokens: 1000,
         contextLimit: 100_000,
         cwd: "/tmp/project",
         branch: "main",
@@ -161,9 +162,9 @@ describe("footer composition (breadcrumb merged in)", () => {
     const line = frame.split("\n").find((l) => l.trim().length > 0) ?? ""
     // LEFT: cwd (git branch).
     expect(line).toContain("/tmp/project (main)")
-    // RIGHT: ctx N% (mode) · model-short.
-    expect(line).toContain("ctx 1%")
-    expect(line).toContain("(build)")
+    // RIGHT: <tokens> (pct) · model-short. The mode moved out of the footer —
+    // the composer's prompt glyph carries it.
+    expect(line).toContain("1.0K (1%)")
     expect(line).toContain("claude-sonnet-5")
     // Short model only — the provider prefix belongs to the picker.
     expect(line).not.toContain("anthropic/")
@@ -181,34 +182,37 @@ describe("footer composition (breadcrumb merged in)", () => {
     expect(frame).not.toContain("(main)")
   })
 
-  test("the cost rides after the model on the right", () => {
+  test("the cost rides between the token figure and the model", () => {
     const frame = frameOf(
       React.createElement(StatusBar, {
         model: "a/b", mode: "build", status: "idle",
         usage: { input: 1_000_000, output: 0, reasoning: 0 },
+        ctxTokens: 40_000,
         promptPricePerMtok: 3,
         cwd: "/tmp",
       }),
     )
     const line = frame.split("\n").find((l) => l.includes("$3.0000")) ?? ""
     expect(line).toContain("$3.0000")
-    expect(line.indexOf("b")).toBeLessThan(line.indexOf("$3.0000"))
+    // Cost sits between the token figure and the model now.
+    expect(line.indexOf("40.0K")).toBeLessThan(line.indexOf("$3.0000"))
+    expect(line.indexOf("$3.0000")).toBeLessThan(line.lastIndexOf("b"))
   })
 })
 
 // ---------------------------------------------------------------------------
 
 describe("footer: one line, busy or idle", () => {
-  test("idle shows the mode in parentheses and the ctx figure", () => {
+  test("idle shows the context figure and the model", () => {
     const frame = frameOf(
       React.createElement(StatusBar, {
         model: "a/b", mode: "build", status: "idle",
-        usage: { input: 1000, output: 0, reasoning: 0 }, contextLimit: 100_000,
+        usage: { input: 1000, output: 0, reasoning: 0 },
+        ctxTokens: 1000, contextLimit: 100_000,
       }),
     )
     expect(frame.split("\n").filter((l) => l.trim().length > 0)).toHaveLength(1)
-    expect(frame).toContain("ctx 1%")
-    expect(frame).toContain("(build)")
+    expect(frame).toContain("1.0K (1%)")
     expect(frame).toContain("b")
   })
 
@@ -327,7 +331,7 @@ describe("bottom pinning in the live frame", () => {
     // of free space; the footer is still the last row of the FRAME (not the
     // viewport) — the frame no longer fills unused rows with filler to get
     // there.
-    expect(lines[lines.length - 1]).toContain("(build)")
+    expect(lines[lines.length - 1]).toContain("claude-sonnet-5")
     inst.unmount()
   })
 

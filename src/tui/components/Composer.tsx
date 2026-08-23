@@ -1,12 +1,24 @@
-import { Box, Text, useInput } from "ink"
-import { TextInput } from "@inkjs/ui"
-import React, { useCallback, useState } from "react"
+import { Box, Text, useInput, useStdout } from "ink"
+import React, { useCallback, useRef, useState } from "react"
 
+import {
+  backslashContinuation,
+  cursorVisualPosition,
+  deleteBackward,
+  insertText,
+  moveCursorLeft,
+  moveCursorRight,
+  moveCursorVertical,
+  trimForSubmit,
+  wrapForDisplay,
+  type EditorState,
+} from "../composerEditor.ts"
+import { useTerminalSize } from "../hooks.ts"
 import { modeColor, theme, type ThemeMode } from "../theme.ts"
 import { Rule } from "./Rule.tsx"
 
 export interface ComposerHandle {
-  /** Programmatically replace the input contents (completion, clear). */
+  /** Programmatically replace the input contents (completion, clear). Cursor lands at the end. */
   set(value: string): void
 }
 
@@ -22,11 +34,11 @@ export interface ComposerProps {
   /** Called when the user submits a non-empty line. */
   onSubmit: (value: string) => void
   /**
-   * Ref receiving an imperative { set } handle. The underlying TextInput is
-   * uncontrolled, so programmatic changes must go through here to be visible.
+   * Ref receiving an imperative { set } handle. State here is fully
+   * controlled by this component, so `set` just replaces it directly.
    */
   handleRef?: React.MutableRefObject<ComposerHandle | undefined>
-  /** Called on every keystroke with the current input value (for autocomplete). */
+  /** Called on every content change (not on a pure cursor move) with the current value. */
   onValueChange?: (value: string) => void
   /** Placeholder text shown when empty. */
   placeholder?: string
@@ -50,13 +62,29 @@ export interface ComposerProps {
   onPopQueued?: () => string | undefined
 }
 
+const EMPTY_EDITOR: EditorState = { value: "", cursor: 0 }
+
+/** Columns reserved for the glyph and its trailing gap — not available to the text itself. */
+const CHROME_COLUMNS = 2
+
 /**
- * Single-line prompt composer. Enter submits, Up/Down navigates a local
- * prompt history. Disabled while the agent is running.
+ * Multiline prompt composer.
  *
- * @inkjs/ui TextInput is uncontrolled, so a `resetKey` is bumped to force a
- * remount (with a fresh `defaultValue`) whenever we programmatically change
- * the input — i.e. after submit (clear) or history navigation (seed).
+ * Plain Enter submits. Alt+Enter, a Kitty-protocol-disambiguated Shift+Enter
+ * (see `INK_RENDER_OPTIONS.kittyKeyboard` in app.tsx — Ink negotiates the
+ * protocol and decodes it into `key.shift` itself; nothing here parses raw
+ * escape codes), or a trailing backslash all insert a literal newline
+ * instead. Up/Down move the cursor between lines while there is more than
+ * one; at the first/last line they fall through to prompt history (or, on an
+ * empty composer, to popping the last queued prompt back for editing).
+ *
+ * Fully controlled — no more `@inkjs/ui` `TextInput` and no remount-to-reset
+ * trick underneath it. `cursor` is a code-point index (see composerEditor.ts)
+ * so astral characters are never split by an edit, and the visual row/column
+ * math is wrap-width-aware, computed fresh on every render from the real
+ * terminal width — the class of bug where backspace near a wrapped line
+ * boundary corrupted a chunk of text can't occur here: deleting only ever
+ * edits the flat string, never the wrapped display of it.
  */
 export function Composer({
   disabled,
@@ -72,49 +100,71 @@ export function Composer({
   onPopQueued,
   handleRef,
 }: ComposerProps): React.ReactElement {
-  const [history, setHistory] = useState<string[]>([])
-  const [cursor, setCursor] = useState<number>(-1) // -1 = "current typing"
-  const [seed, setSeed] = useState("")
-  const [resetKey, setResetKey] = useState(0)
-  // Tracks the live (uncontrolled) input value, keystroke by keystroke, so
-  // the up-arrow handler below can tell "composer is empty" from "composer
-  // has unsubmitted text" without the parent round-tripping it back down.
-  const [liveValue, setLiveValue] = useState("")
+  // The input handler treats these refs as the source of truth for every
+  // decision it makes, not React state: state updates are async (and can
+  // batch), so a burst of keypresses arriving faster than a render — holding
+  // an arrow key, a paste that fans out into several rapid events — would
+  // otherwise have every handler invocation read the SAME stale snapshot
+  // from closure and stomp on each other's result instead of compounding.
+  // Mutating the ref is synchronous, so each keystroke always builds on the
+  // true latest state regardless of render timing.
+  //
+  // `editor` is mirrored into real state too, because it drives what's on
+  // screen. `history`/`historyIndex` never render anything themselves — every
+  // path that changes them also calls `reseed`/`applyEdit`, which already
+  // triggers the render — so they stay plain refs with no state mirror.
+  const [editor, setEditorState] = useState<EditorState>(EMPTY_EDITOR)
+  const editorRef = useRef<EditorState>(EMPTY_EDITOR)
+  const historyRef = useRef<string[]>([])
+  const historyIndexRef = useRef<number>(-1) // -1 = "not walking history"
 
-  const reseed = useCallback((next: string) => {
-    setSeed(next)
-    setLiveValue(next)
-    setResetKey((k) => k + 1)
-    onValueChange?.(next)
-  }, [onValueChange])
+  const setEditor = useCallback((next: EditorState) => {
+    editorRef.current = next
+    setEditorState(next)
+  }, [])
+  const setHistory = useCallback((next: string[]) => {
+    historyRef.current = next
+  }, [])
+  const setHistoryIndex = useCallback((next: number) => {
+    historyIndexRef.current = next
+  }, [])
 
-  const handleChange = useCallback((next: string) => {
-    setLiveValue(next)
-    onValueChange?.(next)
-  }, [onValueChange])
+  const { stdout } = useStdout()
+  const { columns } = useTerminalSize(stdout)
+  const contentWidth = Math.max(1, columns - CHROME_COLUMNS)
 
-  React.useImperativeHandle(
-    handleRef,
-    () => ({ set: reseed }),
-    [reseed],
-  )
-
-  const commit = useCallback(
-    (raw: string) => {
-      const trimmed = raw.trim()
-      if (trimmed.length === 0) return
-      setHistory((h) => [...h, trimmed])
-      setCursor(-1)
-      reseed("")
-      onSubmit(trimmed)
+  /** Replace the whole buffer, cursor at the end, and report the new value upward. */
+  const reseed = useCallback(
+    (next: string) => {
+      setEditor({ value: next, cursor: Array.from(next).length })
+      onValueChange?.(next)
     },
-    [onSubmit, reseed],
+    [onValueChange, setEditor],
   )
 
-  // Up/Down history navigation. useInput is complementary to TextInput's own
-  // Return/backspace handling (we only intercept vertical arrows here).
-  useInput((_, key) => {
+  React.useImperativeHandle(handleRef, () => ({ set: reseed }), [reseed])
+
+  /** Apply an edit that changes the buffer's content, reporting it upward. */
+  const applyEdit = useCallback(
+    (next: EditorState) => {
+      setEditor(next)
+      onValueChange?.(next.value)
+    },
+    [onValueChange, setEditor],
+  )
+
+  const commit = useCallback(() => {
+    const trimmed = trimForSubmit(editorRef.current.value)
+    if (trimmed.length === 0) return
+    setHistory([...historyRef.current, trimmed])
+    setHistoryIndex(-1)
+    reseed("")
+    onSubmit(trimmed)
+  }, [onSubmit, reseed, setHistory, setHistoryIndex])
+
+  useInput((input, key) => {
     if (disabled) return
+
     if (popupActive) {
       if (key.upArrow) { onPopupNavigate?.("up"); return }
       if (key.downArrow) { onPopupNavigate?.("down"); return }
@@ -124,60 +174,152 @@ export function Composer({
       if (key.return) { onPopupAccept?.(); return }
       return
     }
+
+    const current = editorRef.current
+
+    if (key.return) {
+      // Alt+Enter (ESC-prefixed, the portable encoding most terminals send)
+      // or a Kitty-disambiguated Shift+Enter (Ink decodes the CSI-u sequence
+      // into key.shift itself — see the module doc) both insert a newline.
+      if (key.meta || key.shift) {
+        applyEdit(insertText(current, "\n"))
+        return
+      }
+      // Universal fallback: a trailing backslash right at the cursor means
+      // "continue on the next line" even where neither of the above arrives.
+      const continued = backslashContinuation(current)
+      if (continued) {
+        applyEdit(continued)
+        return
+      }
+      commit()
+      return
+    }
+
     if (key.upArrow) {
-      // An empty composer with something queued edits the queue first — the
-      // whole point of pushing it back is to fix it before it's ever sent,
-      // so this takes priority over cycling through already-sent history.
-      if (liveValue.trim().length === 0 && cursor === -1) {
+      // Cursor navigation within the buffer wins whenever there is another
+      // real line above — moving through your own text has to work before
+      // any history/queue fallback kicks in.
+      const moved = moveCursorVertical(current.value, current.cursor, "up")
+      if (moved !== null) {
+        setEditor({ ...current, cursor: moved })
+        return
+      }
+      // At the first line. An empty composer with something queued edits the
+      // queue first — the whole point of pushing it back is to fix it before
+      // it's ever sent, so this takes priority over cycling through history.
+      if (current.value.length === 0 && historyIndexRef.current === -1) {
         const popped = onPopQueued?.()
         if (popped !== undefined) {
           reseed(popped)
           return
         }
       }
-      if (history.length === 0) return
-      const next = cursor === -1 ? history.length - 1 : Math.max(0, cursor - 1)
-      setCursor(next)
-      reseed(history[next] ?? "")
-    } else if (key.downArrow) {
-      if (cursor === -1) return
-      const next = cursor + 1
-      if (next >= history.length) {
-        setCursor(-1)
+      const hist = historyRef.current
+      if (hist.length === 0) return
+      const next = historyIndexRef.current === -1 ? hist.length - 1 : Math.max(0, historyIndexRef.current - 1)
+      setHistoryIndex(next)
+      reseed(hist[next] ?? "")
+      return
+    }
+
+    if (key.downArrow) {
+      const moved = moveCursorVertical(current.value, current.cursor, "down")
+      if (moved !== null) {
+        setEditor({ ...current, cursor: moved })
+        return
+      }
+      if (historyIndexRef.current === -1) return
+      const hist = historyRef.current
+      const next = historyIndexRef.current + 1
+      if (next >= hist.length) {
+        setHistoryIndex(-1)
         reseed("")
       } else {
-        setCursor(next)
-        reseed(history[next] ?? "")
+        setHistoryIndex(next)
+        reseed(hist[next] ?? "")
       }
+      return
     }
+
+    if (key.leftArrow) { setEditor(moveCursorLeft(current)); return }
+    if (key.rightArrow) { setEditor(moveCursorRight(current)); return }
+
+    if (key.backspace || key.delete) {
+      // Terminals disagree on which of these a physical Backspace key sends
+      // (many send DEL, 0x7F, which some parsers report as `delete`) — both
+      // delete the character before the cursor, matching every other
+      // terminal editor's convention for "Backspace".
+      applyEdit(deleteBackward(current))
+      return
+    }
+
+    // Never insert a raw control/meta byte as text — ctrl+o, ctrl+c, and any
+    // other chord are handled elsewhere (or nowhere) and must not leak a
+    // stray character into the buffer.
+    if (key.tab || key.escape || key.ctrl || key.meta) return
+
+    if (input.length > 0) applyEdit(insertText(current, input))
   })
 
   // The prompt glyph carries the mode. It is the single accented mark in the
   // chrome, and it sits where the eye already is when typing.
   const glyph = modeColor(mode)
+  const isEmpty = editor.value.length === 0
+  const rows = isEmpty ? [] : wrapForDisplay(editor.value, contentWidth)
+  const { row: cursorRow, col: cursorCol } = isEmpty
+    ? { row: 0, col: 0 }
+    : cursorVisualPosition(editor.value, editor.cursor, contentWidth)
+  const resolvedPlaceholder =
+    placeholder ?? (disabled ? "agent running…" : "ask anything, or / for commands")
 
   return (
     <Box flexDirection="column">
       {autocomplete}
       {/*
         Rules above and below, not a box. A box around an input says "form
-        field"; two rules say "this is where you type" with none of the weight,
-        and they leave the region free to grow — @inkjs/ui renders its value in
-        a plain <Text>, so Ink soft-wraps long input and the area between the
-        rules expands on its own, with no height to keep in sync.
+        field"; two rules say "this is where you type" with none of the
+        weight, and they leave the region free to grow — each visual row is
+        its own <Text>, so the area between the rules expands on its own as
+        the buffer wraps or gains lines, with no height to keep in sync.
       */}
       <Rule />
       <Box paddingLeft={1} gap={1}>
-        <Text color={disabled ? theme.muted : glyph}>{disabled ? "\u2022" : "\u203a"}</Text>
-        <Box flexGrow={1}>
-          <TextInput
-            key={resetKey}
-            isDisabled={disabled}
-            defaultValue={seed}
-            placeholder={placeholder ?? (disabled ? "agent running\u2026" : "ask anything, or / for commands")}
-            onSubmit={commit}
-            onChange={handleChange}
-          />
+        <Text color={disabled ? theme.muted : glyph}>{disabled ? "•" : "›"}</Text>
+        <Box flexGrow={1} flexDirection="column">
+          {isEmpty ? (
+            <Text>
+              {!disabled ? <Text inverse>{" "}</Text> : null}
+              <Text dimColor>{resolvedPlaceholder}</Text>
+            </Text>
+          ) : (
+            rows.map((rowText, i) => {
+              const dim = disabled
+              if (dim || i !== cursorRow) {
+                return (
+                  <Text key={i} dimColor={dim} wrap="truncate-end">
+                    {rowText.length === 0 ? " " : rowText}
+                  </Text>
+                )
+              }
+              const chars = Array.from(rowText)
+              if (cursorCol >= chars.length) {
+                return (
+                  <Text key={i} wrap="truncate-end">
+                    {rowText}
+                    <Text inverse>{" "}</Text>
+                  </Text>
+                )
+              }
+              return (
+                <Text key={i} wrap="truncate-end">
+                  {chars.slice(0, cursorCol).join("")}
+                  <Text inverse>{chars[cursorCol]}</Text>
+                  {chars.slice(cursorCol + 1).join("")}
+                </Text>
+              )
+            })
+          )}
         </Box>
       </Box>
       <Rule />

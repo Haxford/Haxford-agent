@@ -91,6 +91,32 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
   // Timer for the currently-scheduled hint clear, so setHint/reset can cancel it.
   let hintTimer: ReturnType<typeof setTimeout> | undefined
 
+  // Render throttle: batch notifications to ~10fps (100ms) to reduce re-renders
+  // during high-frequency streaming deltas. Message.updated events coalesce;
+  // structural changes (notice, reset, etc.) notify immediately.
+  let renderThrottleTimer: ReturnType<typeof setTimeout> | undefined
+  let pendingNotify = false
+
+  const scheduleNotify = (): void => {
+    if (renderThrottleTimer !== undefined) {
+      pendingNotify = true
+      return
+    }
+    pendingNotify = false
+    for (const l of listeners) l()
+    renderThrottleTimer = setTimeout(() => {
+      renderThrottleTimer = undefined
+      if (pendingNotify) scheduleNotify()
+    }, 100)
+  }
+
+  const notifyImmediate = (): void => {
+    if (renderThrottleTimer !== undefined) clearTimeout(renderThrottleTimer)
+    renderThrottleTimer = undefined
+    pendingNotify = false
+    for (const l of listeners) l()
+  }
+
   // Per-notice expiry. `state.notices` is a plain string[] (the frozen shape
   // other consumers read), so the id that ties a live entry to its timer is
   // tracked here, in lockstep by position — `noticeIds[i]` is the id of
@@ -118,12 +144,9 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
       ...state,
       notices: [...state.notices.slice(0, idx), ...state.notices.slice(idx + 1)],
     }
-    notify()
+    notifyImmediate()
   }
 
-  const notify = (): void => {
-    for (const l of listeners) l()
-  }
 
   return {
     getState(): TuiState {
@@ -148,8 +171,15 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
           id,
           setTimeout(() => expireNotice(id), noticeTtlMs),
         )
+        // Notices are structural, notify immediately
+        notifyImmediate()
+      } else if (event.type === "message.updated" || event.type === "part.updated") {
+        // High-frequency streaming deltas: throttle to reduce re-renders
+        scheduleNotify()
+      } else {
+        // Other structural changes: notify immediately
+        notifyImmediate()
       }
-      notify()
     },
 
     reset(messages: Message[]): void {
@@ -162,12 +192,16 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
         clearTimeout(hintTimer)
         hintTimer = undefined
       }
+      if (renderThrottleTimer !== undefined) {
+        clearTimeout(renderThrottleTimer)
+        renderThrottleTimer = undefined
+      }
       clearNoticeTimers()
       // toolsExpanded rides through: it is a view preference, not session
       // data, and having /clear silently re-collapse everything would be a
       // small betrayal of a setting the user just chose.
       state = { ...fromMessages(messages), epoch, toolsExpanded: state.toolsExpanded }
-      notify()
+      notifyImmediate()
     },
 
     setHint(text: string, ttlMs: number = 2000): void {
@@ -178,13 +212,13 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
       // Preserve any existing reducer state (messages, usage, …) — the hint
       // is UI-only and rides alongside the real state without disturbing it.
       state = { ...state, hint: text }
-      notify()
+      notifyImmediate()
       const timer = setTimeout(() => {
         // Only clear if this hint is still the one we set (a later setHint
         // resets the timer and would otherwise be clobbered).
         if (state.hint === text) {
           state = { ...state, hint: undefined }
-          notify()
+          notifyImmediate()
         }
         if (hintTimer === timer) hintTimer = undefined
       }, ttlMs)
@@ -194,7 +228,7 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
     setToolsExpanded(expanded: boolean): boolean {
       if (state.toolsExpanded === expanded) return expanded
       state = { ...state, toolsExpanded: expanded }
-      notify()
+      notifyImmediate()
       return expanded
     },
 
@@ -206,7 +240,7 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
       // then replaying a hundred stale prompts when the run finally lands.
       if (state.queue.length >= MAX_QUEUED) return false
       state = { ...state, queue: [...state.queue, text] }
-      notify()
+      notifyImmediate()
       return true
     },
 
@@ -214,7 +248,7 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
       const [next, ...rest] = state.queue
       if (next === undefined) return undefined
       state = { ...state, queue: rest }
-      notify()
+      notifyImmediate()
       return next
     },
 
@@ -222,7 +256,7 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
       if (state.queue.length === 0) return undefined
       const last = state.queue[state.queue.length - 1]
       state = { ...state, queue: state.queue.slice(0, -1) }
-      notify()
+      notifyImmediate()
       return last
     },
 

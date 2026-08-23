@@ -71,8 +71,9 @@ describe("HaxfordApp rendering + app-level input", () => {
     expect(frame).toContain("haxford v")
     expect(frame).toContain("esc interrupt")
     expect(frame).toContain("~/.haxford/EXTENDING.md")
-    // Footer: where you are and what is answering.
-    expect(frame).toContain("(build)")
+    // Footer: what is answering. The mode moved out of the right cluster —
+    // the composer's prompt glyph is the mode indicator now.
+    expect(frame).toContain("demo")
     expect(frame).toContain("/help")
     // No ASCII art: the wordmark line is plain text.
     expect(frame).not.toContain("\u2588")
@@ -83,7 +84,7 @@ describe("HaxfordApp rendering + app-level input", () => {
     const { inst } = mount()
     const lines = (inst.lastFrame() ?? "").split("\n").filter((l) => l.trim().length > 0)
     const composer = lines.findIndex((l) => l.includes("ask anything"))
-    const footer = lines.findIndex((l) => l.includes("(build)"))
+    const footer = lines.findIndex((l) => l.includes("demo"))
     expect(composer).toBeGreaterThanOrEqual(0)
     expect(footer).toBe(lines.length - 1)
     expect(footer).toBeGreaterThan(composer)
