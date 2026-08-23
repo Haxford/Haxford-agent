@@ -1,5 +1,6 @@
 import { z } from "zod"
 import type { Tool, ToolResult } from "../types/tool.ts"
+import { redactSecrets } from "../config/secrets.ts"
 import { errorText, truncateText } from "./shared.ts"
 
 const MAX_OUTPUT_CHARS = 50_000
@@ -228,13 +229,15 @@ Usage:
     try {
       const fetched = await fetchValidated(url)
       if ("error" in fetched) {
-        return { title: `webfetch ${url}`, output: fetched.error }
+        return { title: `webfetch ${url}`, output: redactSecrets(fetched.error) }
       }
       const { response } = fetched
       if (!response.ok) {
         return {
           title: `webfetch ${url}`,
-          output: `Error: HTTP ${response.status} ${response.statusText} from ${url}.`,
+          output: redactSecrets(
+            `Error: HTTP ${response.status} ${response.statusText} from ${url}.`,
+          ),
         }
       }
 
@@ -244,7 +247,14 @@ Usage:
       const bytes = buf.byteLength > MAX_BYTES
         ? buf.slice(0, MAX_BYTES)
         : buf
-      const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes)
+      // Masked once here, before the HTML strip, the truncation, and the
+      // cache — so every downstream path (including a later cache hit) serves
+      // the safe text. A fetched page is third-party content entering the
+      // model's context and the session JSONL exactly as bash, read and grep
+      // output do, and those have been masked since the beginning.
+      const body = redactSecrets(
+        new TextDecoder("utf-8", { fatal: false }).decode(bytes),
+      )
       const truncatedBytes = buf.byteLength > MAX_BYTES
 
       const text = contentType.includes("text/html")
@@ -286,7 +296,7 @@ Usage:
       }
       return {
         title: `webfetch ${url}`,
-        output: `Error fetching ${url}: ${errorText(error)}`,
+        output: redactSecrets(`Error fetching ${url}: ${errorText(error)}`),
       }
     }
   },

@@ -28,8 +28,10 @@ follow it exactly.
 | `src/index.ts`, `src/config/` | coordinator | Entrypoint, wiring, config loading |
 
 `.haxford/settings.local.json` is machine-local: the permission engine writes
-"always allow" rules there on user approval, and it is **not** in `.gitignore` —
-do not commit it, and treat its contents as untrusted when reading config.
+"always allow" rules there on user approval. It **is** in `.gitignore`, so it
+stays out of commits on its own — but still treat its contents as untrusted
+when reading config: it is a file on disk that anything can edit, and the rules
+in it decide what runs without asking.
 
 ## Rules
 

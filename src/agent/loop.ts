@@ -4,6 +4,7 @@ import {
   type ModelMessage,
   type ToolSet,
 } from "ai"
+import { redactSecrets } from "../config/secrets.ts"
 import { extensionRegistry } from "../extend/registry.ts"
 import type { Mode } from "../permission/engine.ts"
 import { resolveModel } from "../providers/index.ts"
@@ -182,7 +183,24 @@ function toTokenUsage(usage: {
   return result
 }
 
+/**
+ * Render an error as a string the model, the transcript, and the session file
+ * can all safely hold.
+ *
+ * Redacted at the point of creation rather than at each of the half-dozen
+ * places the result lands. A provider error is the one string in the loop
+ * built from data haxford did not author: `.message` can quote a rejected
+ * request back at you, and the `JSON.stringify` branch below serialises
+ * *every* enumerable property of whatever was thrown — which for a gateway
+ * that attaches its request to the error means the `authorization` header
+ * goes with it. Tool output has been masked since the beginning; error text
+ * reaches the same places by a quieter route.
+ */
 function errorMessage(error: unknown): string {
+  return redactSecrets(rawErrorMessage(error))
+}
+
+function rawErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   if (typeof error === "string") return error
   try {

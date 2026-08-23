@@ -2,6 +2,7 @@ import { appendFile } from "node:fs/promises"
 import { readdirSync } from "node:fs"
 import path from "node:path"
 
+import { redactSecrets } from "../config/secrets.ts"
 import type { Message, Part } from "../types/message.ts"
 import type { SessionInfo } from "../types/session.ts"
 import {
@@ -69,6 +70,29 @@ async function writeMeta(directory: string, info: SessionInfo): Promise<void> {
   await Bun.write(sessionMetaFile(directory, info.id), toLine(info))
 }
 
+/**
+ * Mask credentials in the one field built from data haxford did not author.
+ *
+ * `message.error` carries provider error text — the only string reaching this
+ * file that can quote a request back at us, headers included. The loop already
+ * redacts it at the point of creation; this is the structural half of the same
+ * guarantee, sitting on the write itself so a future error path that forgets
+ * cannot put a key on disk. Deliberately scoped to that one field rather than
+ * the whole message: tool output is masked by each tool at its own source, and
+ * walking every part on every append would cost a full traversal per snapshot
+ * to re-check strings that were already checked.
+ *
+ * The message is copied, never mutated — the caller keeps it in `history` and
+ * replays it to the model.
+ */
+function redactForDisk(message: Message): Message {
+  if (typeof message.error !== "string" || message.error.length === 0) {
+    return message
+  }
+  const safe = redactSecrets(message.error)
+  return safe === message.error ? message : { ...message, error: safe }
+}
+
 /** Append a message snapshot to the session transcript. */
 export async function appendMessage(
   directory: string,
@@ -77,7 +101,7 @@ export async function appendMessage(
 ): Promise<void> {
   const file = sessionFile(directory, sessionID)
   ensureDir(sessionsDir(directory))
-  await queuedAppend(file, message)
+  await queuedAppend(file, redactForDisk(message))
   // Best-effort: bump the session's updated time. A failure here (e.g. a
   // corrupt or missing meta) must not poison a successful transcript write.
   try {
