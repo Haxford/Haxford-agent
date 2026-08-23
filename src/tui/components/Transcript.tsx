@@ -189,6 +189,7 @@ export function TextBlock({ part, role }: { part: TextPart; role: Message["role"
     // exactly as typed. Rendering the user's markdown would mean showing them
     // something other than what they wrote, which is the one place a prettier
     // transcript is the wrong trade.
+    // User turns always have a blank line above (see Transcript, line 318).
     return (
       <Box flexDirection="column">
         {part.text.split("\n").map((line, i) => (

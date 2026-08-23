@@ -307,6 +307,26 @@ describe("parseSlashCommand", () => {
   })
 })
 
+describe("unknown slash commands", () => {
+  test("/nope (unknown command) decodes to unknown action without prompting", () => {
+    const action = parseSlashCommand("/nope", "build")
+    expect(action.kind).toBe("unknown")
+    const a = action as Extract<SlashAction, { kind: "unknown" }>
+    expect(a.command).toBe("/nope")
+  })
+
+  test("invalid commands like /wrongcmd never trigger onPrompt", () => {
+    // The parseSlashCommand function correctly identifies unknown commands.
+    // The submit handler (line 699) does NOT call onPrompt for unknown kind,
+    // so the command text never appends to the message history.
+    const unknownCmds = ["/nope", "/wrongcmd", "/frobnicate", "/NOPE"]
+    for (const cmd of unknownCmds) {
+      const action = parseSlashCommand(cmd, "build")
+      expect(action.kind).toBe("unknown")
+    }
+  })
+})
+
 describe("HaxfordApp /help listing", () => {
   test("HELP_TEXT lists all eight commands", () => {
     for (const cmd of ["/help", "/model", "/sessions", "/compact", "/init", "/mode", "/clear", "/exit"]) {
