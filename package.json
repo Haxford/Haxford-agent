@@ -1,6 +1,6 @@
 {
   "name": "haxford",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A terminal AI agent harness with TUI",
   "type": "module",
   "bin": {
