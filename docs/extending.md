@@ -1,19 +1,62 @@
 # Extending haxford
 
-haxford reads three directories under `~/.haxford`. Nothing here needs a build
-step, a manifest, or a restart of anything but haxford itself.
+haxford reads a few files and directories under `~/.haxford`. Nothing here
+needs a build step, a manifest, or a restart of anything but haxford itself.
 
 | Layer | Lives in | What it is |
 |---|---|---|
+| **Standing context** | `~/.haxford/init.md`, `./.haxfordcontext` | Instructions loaded into every session, unconditionally. |
 | **Skills** | `~/.haxford/skills/<name>/SKILL.md` | Instructions the model pulls into context when relevant. |
 | **Extensions** | `~/.haxford/extensions/*.ts` | Code: slash commands, tools, lifecycle hooks. |
 | **Themes** | `~/.haxford/themes/<name>.json` | Colour tokens for the TUI. |
 
-Run `/reload` after changing any of them.
+Run `/reload` after changing skills, extensions or themes. Standing context is
+read when a session starts, so a new session picks it up.
 
 ---
 
-## 1. Skills
+## 1. Standing context
+
+Three files, all optional, concatenated in this order and prepended to every
+session:
+
+| File | Scope | Use it for |
+|---|---|---|
+| `~/.haxford/init.md` | every project | How *you* work: tone, conventions you always want, recurring instructions. |
+| `./AGENTS.md` | this repository | The shared contract — committed, and read by other agent tools too. |
+| `./.haxfordcontext` | this checkout | Local notes you would not commit: current focus, a migration in flight, a warning about one directory. |
+
+The order is deliberate: most general first. `init.md` is identical in every
+project, so putting it first keeps the start of the prompt byte-stable as you
+move between directories, which is what lets the provider's prompt cache hold.
+
+All three are plain markdown with no frontmatter. Missing, empty, and
+unreadable files are skipped silently — a typo in one costs you that file, not
+the session. Sections are trimmed and joined with a blank line.
+
+```markdown
+# ~/.haxford/init.md
+Prefer small diffs. Explain a change before making it if it touches more than
+three files. Never add a dependency without saying why.
+```
+
+```markdown
+# ./.haxfordcontext
+We are mid-migration from the old parser in src/legacy. Do not add features
+there; new work goes in src/parser.
+```
+
+Add `.haxfordcontext` to `.gitignore` if its contents are yours rather than
+the team's. `AGENTS.md` is meant to be committed.
+
+Standing context always loads. A **skill** (below) is the opposite trade: it
+sits on disk costing one index line until the model decides it is relevant.
+Put a thing in standing context when it applies to everything you do; make it
+a skill when it applies to one kind of task.
+
+---
+
+## 2. Skills
 
 A skill is a folder with a `SKILL.md`. Its frontmatter is indexed at startup and
 listed in the system prompt; the body is *not* loaded until the model decides the
@@ -44,7 +87,7 @@ Rules:
 
 ---
 
-## 2. Extensions
+## 3. Extensions
 
 A file in `~/.haxford/extensions/` that default-exports a function. Bun runs
 TypeScript directly, so `.ts` needs no compilation. Files load in **filename
@@ -156,7 +199,7 @@ and everything else still loads.
 
 ---
 
-## 3. Themes
+## 4. Themes
 
 A JSON file of colour tokens. Unknown tokens are ignored with a warning;
 tokens you leave out keep their default, so a theme can be three lines.
@@ -187,7 +230,7 @@ Tokens: `accent`, `text`, `muted`, `dim`, `success`, `warning`, `error`,
 
 ---
 
-## 4. /reload
+## 5. /reload
 
 `/reload` disposes every registered command, tool and hook, then rescans all
 three directories. No restart, no lost session.
@@ -198,7 +241,7 @@ modules those files import keep the version first loaded. If you edit a shared
 
 ---
 
-## 5. Writing one from inside haxford
+## 6. Writing one from inside haxford
 
 You can ask haxford to extend itself — it has this document and a `write` tool:
 

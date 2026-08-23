@@ -175,14 +175,21 @@ export function stripFrontmatter(text: string): string {
  * every other skill they wrote.
  */
 export async function scanSkills(
-  dir: string = skillsDir(),
-  extraDirs: string[] = dir === skillsDir() ? [agentSkillsDir()] : [],
+  dir?: string,
+  extraDirs?: string[],
 ): Promise<{ skills: SkillSummary[]; warnings: string[] }> {
+  // "Was a directory passed?" cannot be answered by comparing against
+  // `skillsDir()` in a default initialiser: a caller that deliberately passes
+  // the primary directory is indistinguishable from one that passed nothing,
+  // and the secondary scan then runs anyway. Testing for `undefined` asks the
+  // question that was actually meant.
+  const primary = dir ?? skillsDir()
+  const extras = extraDirs ?? (dir === undefined ? [agentSkillsDir()] : [])
   const warnings: string[] = []
   const found: SkillSummary[] = []
   const owner = new Map<string, string>()
 
-  for (const [i, root] of [dir, ...extraDirs].entries()) {
+  for (const [i, root] of [primary, ...extras].entries()) {
     let entries: Dirent[]
     try {
       entries = await readdir(root, { withFileTypes: true })

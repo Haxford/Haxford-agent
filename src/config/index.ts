@@ -1,5 +1,6 @@
 import path from "node:path"
 import { stat } from "node:fs/promises"
+import { initContextPath } from "../extend/paths.ts"
 import { invalidateSecretCache } from "./secrets.ts"
 import { LOCAL_SETTINGS_FILE } from "../permission/engine.ts"
 import type { TrustConfig } from "../permission/engine.ts"
@@ -45,6 +46,9 @@ export interface HaxfordConfigFile extends Omit<HaxfordConfig, "permission"> {
 
 /** The reserved top-level key that selects a theme, not part of `HaxfordConfig`. */
 const THEME_KEY = "theme"
+
+/** Project-level standing context, alongside the shared `AGENTS.md`. */
+export const PROJECT_CONTEXT_FILE = ".haxfordcontext"
 
 /** Read `theme` out of one config layer, ignoring anything that is not a name. */
 function readThemeName(config: Partial<HaxfordConfigFile>): string | undefined {
@@ -157,7 +161,12 @@ export interface LoadedConfig {
    * it is `activeThemeName`'s job and not this loader's.
    */
   theme?: string
-  /** Verbatim contents of AGENTS.md in the project root, if present. */
+  /**
+   * Standing context prepended to every session: `~/.haxford/init.md`, then
+   * the project's `AGENTS.md`, then `<cwd>/.haxfordcontext` — joined with a
+   * blank line, each trimmed, missing sources skipped. Undefined when none of
+   * the three exist. See `loadStandingContext`.
+   */
   projectInstructions?: string
   /**
    * Security and hygiene warnings discovered during loading: project-config
@@ -336,6 +345,61 @@ async function collectWarnings(
 }
 
 /**
+ * Read a text file, or undefined when it is absent or unreadable.
+ *
+ * Standing context is a convenience, never a precondition: a file that is
+ * missing, a directory, or unreadable because of its permissions costs the
+ * user that one source and nothing else. Failing the whole config load over
+ * an optional file would be the wrong trade.
+ */
+async function readOptionalText(file: string): Promise<string | undefined> {
+  try {
+    const handle = Bun.file(file)
+    if (!(await handle.exists())) return undefined
+    const text = await handle.text()
+    return text.trim().length > 0 ? text.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The standing context prepended to every session, composed from three files.
+ *
+ * In order, most general to most specific — which is both how a reader would
+ * want them and what keeps the prompt cacheable:
+ *
+ * 1. `~/.haxford/init.md` — the user's own instructions, identical in every
+ *    project, so it sits first and the cached prefix survives a directory
+ *    change.
+ * 2. `<cwd>/AGENTS.md` — the project's convention contract, shared with the
+ *    repository and its other contributors.
+ * 3. `<cwd>/.haxfordcontext` — project-level standing context that is *not*
+ *    the shared contract: local notes, current focus, things a contributor
+ *    would not commit.
+ *
+ * Sections are joined with a blank line and each is trimmed, so a file that
+ * ends with three newlines does not push the next one down the prompt. Every
+ * source is optional; all three absent yields undefined, which is what the
+ * caller already treats as "no project instructions".
+ */
+async function loadStandingContext(cwd: string): Promise<string | undefined> {
+  const sources = [
+    initContextPath(),
+    path.join(cwd, "AGENTS.md"),
+    path.join(cwd, PROJECT_CONTEXT_FILE),
+  ]
+
+  const sections: string[] = []
+  for (const file of sources) {
+    const text = await readOptionalText(file)
+    if (text !== undefined) sections.push(text)
+  }
+
+  return sections.length > 0 ? sections.join("\n\n") : undefined
+}
+
+/**
  * Load config in precedence order: global, then project, then project-local.
  * Later files win on scalar conflicts; permission rules merge per pattern.
  * Security warnings are returned so the caller can surface them before the
@@ -386,10 +450,7 @@ export async function loadConfig(cwd: string): Promise<LoadedConfig> {
     local,
   )
 
-  const agentsFile = Bun.file(path.join(cwd, "AGENTS.md"))
-  const projectInstructions = (await agentsFile.exists())
-    ? await agentsFile.text()
-    : undefined
+  const projectInstructions = await loadStandingContext(cwd)
 
   return {
     config,

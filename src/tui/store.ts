@@ -24,6 +24,31 @@ export const MAX_QUEUED = 100
 export const NOTICE_TTL_MS = 4000
 
 /**
+ * Milliseconds between transcript repaints while a stream is running.
+ *
+ * ~10fps. The reducer applies every delta immediately, so this costs no
+ * content — only the rate at which Ink is told to redraw. Unthrottled, a
+ * token-per-event stream repainted the whole transcript hundreds of times a
+ * second, which is what made terminal text selection impossible to hold, kept
+ * the viewport jumping under the cursor, and flooded scrollback.
+ */
+export const RENDER_THROTTLE_MS = 100
+
+/**
+ * Events that arrive at streaming rates and may therefore be coalesced.
+ *
+ * `part.delta` is the one that actually matters — it fires per token — but a
+ * long reply also produces a `part.updated` per part change and a
+ * `message.updated` snapshot, and all three describe the same growing answer.
+ * Everything NOT in this set is structural and flushes immediately.
+ */
+const STREAMING_EVENTS: ReadonlySet<string> = new Set([
+  "part.delta",
+  "part.updated",
+  "message.updated",
+])
+
+/**
  * External store wrapping TuiState. Suitable for React's `useSyncExternalStore`:
  * `getState()` returns a stable reference until a dispatch/reset produces a
  * new state, so React does not need to re-render on unrelated notifications.
@@ -91,9 +116,8 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
   // Timer for the currently-scheduled hint clear, so setHint/reset can cancel it.
   let hintTimer: ReturnType<typeof setTimeout> | undefined
 
-  // Render throttle: batch notifications to ~10fps (100ms) to reduce re-renders
-  // during high-frequency streaming deltas. Message.updated events coalesce;
-  // structural changes (notice, reset, etc.) notify immediately.
+  // Render throttle: coalesce notifications to ~10fps during streaming.
+  // Structural changes (notice, turn boundaries, reset) still notify at once.
   let renderThrottleTimer: ReturnType<typeof setTimeout> | undefined
   let pendingNotify = false
 
@@ -107,7 +131,7 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
     renderThrottleTimer = setTimeout(() => {
       renderThrottleTimer = undefined
       if (pendingNotify) scheduleNotify()
-    }, 100)
+    }, RENDER_THROTTLE_MS)
   }
 
   const notifyImmediate = (): void => {
@@ -173,11 +197,16 @@ export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): 
         )
         // Notices are structural, notify immediately
         notifyImmediate()
-      } else if (event.type === "message.updated" || event.type === "part.updated") {
-        // High-frequency streaming deltas: throttle to reduce re-renders
+      } else if (STREAMING_EVENTS.has(event.type)) {
+        // Streaming: the reducer has already applied this, so `getState()` is
+        // current — only the *notification* waits. Nothing is lost, and the
+        // terminal repaints at a rate a human can read and a mouse can select
+        // text against.
         scheduleNotify()
       } else {
-        // Other structural changes: notify immediately
+        // Anything structural — turn boundaries, usage, errors, loop.end —
+        // flushes at once, which also lands the final content of a stream:
+        // the loop always emits one of these after its last delta.
         notifyImmediate()
       }
     },
