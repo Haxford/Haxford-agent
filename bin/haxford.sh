@@ -7,7 +7,19 @@
 # - Outside herdr (regular terminal): execs the binary directly.
 set -euo pipefail
 
-BIN="/home/harry/Projects/haxford-agent/haxford"
+# Resolve the binary relative to this script (repo layout: bin/haxford.sh ->
+# ../haxford), then fall back to whatever `haxford` is on PATH — an installed
+# copy under ~/.local/bin. Hardcoding an absolute path pinned this launcher to
+# one machine and one checkout.
+_here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "$_here/../haxford" ]]; then
+  BIN="$_here/../haxford"
+elif command -v haxford >/dev/null 2>&1; then
+  BIN="$(command -v haxford)"
+else
+  echo "haxford: binary not found (built it with 'bun run compile'?)" >&2
+  exit 127
+fi
 
 if [[ "${HERDR_ENV:-}" == "1" ]] && command -v herdr >/dev/null 2>&1; then
   for a in "$@"; do
