@@ -41,7 +41,7 @@ export const HEADER_HINTS =
  * Kept under 78 chars so it never wraps at an 80-column terminal — the pin
  * math subtracts HEADER_LINES and wrapping would shift first paint. */
 export const HEADER_ABOUT =
-  "extend yourself: skills · extensions · themes · agents · ~/.haxford/EXTENDING.md"
+  "self-extensible - see ~/.haxford/EXTENDING.md · skills · extensions"
 
 /** Replace a leading home directory with `~`, so the footer cwd stays readable. */
 export function tildeCwd(
