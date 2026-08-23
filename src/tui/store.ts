@@ -12,6 +12,18 @@ import { fromMessages, initialTuiState, reduce, type TuiState } from "./state.ts
 export const MAX_QUEUED = 100
 
 /**
+ * How long a notice stays visible before it auto-clears.
+ *
+ * Notices used to accumulate for the life of the session (capped only at 50
+ * in `reduce`), so a handful of "unknown command"/reload/compaction notices
+ * from early in a long session sat above the composer forever, stacking with
+ * whatever the agent said later. A few seconds is enough to actually read
+ * one; nothing here is meant to be a permanent record — that's what the
+ * transcript is for.
+ */
+export const NOTICE_TTL_MS = 4000
+
+/**
  * External store wrapping TuiState. Suitable for React's `useSyncExternalStore`:
  * `getState()` returns a stable reference until a dispatch/reset produces a
  * new state, so React does not need to re-render on unrelated notifications.
@@ -60,11 +72,17 @@ export interface TuiStore {
   subscribe(listener: () => void): () => void
 }
 
+export interface TuiStoreOptions {
+  /** Overrides `NOTICE_TTL_MS`. Exists for tests — real hosts want the default. */
+  noticeTtlMs?: number
+}
+
 /**
  * Create a TuiStore seeded with an initial message list. The seed is cloned so
  * callers cannot mutate the store's internal state by holding onto the array.
  */
-export function createTuiStore(initial: Message[]): TuiStore {
+export function createTuiStore(initial: Message[], opts: TuiStoreOptions = {}): TuiStore {
+  const noticeTtlMs = opts.noticeTtlMs ?? NOTICE_TTL_MS
   let state: TuiState = fromMessages(initial)
   const listeners = new Set<() => void>()
   // Session generation. The transcript keys its <Static> region on this so a
@@ -72,6 +90,36 @@ export function createTuiStore(initial: Message[]): TuiStore {
   let epoch = 0
   // Timer for the currently-scheduled hint clear, so setHint/reset can cancel it.
   let hintTimer: ReturnType<typeof setTimeout> | undefined
+
+  // Per-notice expiry. `state.notices` is a plain string[] (the frozen shape
+  // other consumers read), so the id that ties a live entry to its timer is
+  // tracked here, in lockstep by position — `noticeIds[i]` is the id of
+  // `state.notices[i]`. `reduce`'s own cap (oldest dropped past 50) trims
+  // from the front the same way, so the two arrays stay aligned without
+  // reduce() needing to know ids exist at all.
+  let noticeSeq = 0
+  let noticeIds: number[] = []
+  const noticeTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+  const clearNoticeTimers = (): void => {
+    for (const timer of noticeTimers.values()) clearTimeout(timer)
+    noticeTimers.clear()
+    noticeIds = []
+  }
+
+  const expireNotice = (id: number): void => {
+    noticeTimers.delete(id)
+    const idx = noticeIds.indexOf(id)
+    // Already gone — dropped by the 50-entry cap, or a reset since this timer
+    // was scheduled. Either way there is nothing left to clear.
+    if (idx === -1) return
+    noticeIds = [...noticeIds.slice(0, idx), ...noticeIds.slice(idx + 1)]
+    state = {
+      ...state,
+      notices: [...state.notices.slice(0, idx), ...state.notices.slice(idx + 1)],
+    }
+    notify()
+  }
 
   const notify = (): void => {
     for (const l of listeners) l()
@@ -87,6 +135,20 @@ export function createTuiStore(initial: Message[]): TuiStore {
       // Skip notify when the reducer returns the same reference (no change).
       if (next === state) return
       state = next
+      if (event.type === "notice") {
+        const id = noticeSeq++
+        noticeIds = [...noticeIds, id]
+        // Mirror reduce()'s own cap: it just dropped the oldest notice(s) off
+        // the front once past 50, so trim the id list the same way to stay
+        // aligned with state.notices.
+        if (noticeIds.length > state.notices.length) {
+          noticeIds = noticeIds.slice(noticeIds.length - state.notices.length)
+        }
+        noticeTimers.set(
+          id,
+          setTimeout(() => expireNotice(id), noticeTtlMs),
+        )
+      }
       notify()
     },
 
@@ -100,6 +162,7 @@ export function createTuiStore(initial: Message[]): TuiStore {
         clearTimeout(hintTimer)
         hintTimer = undefined
       }
+      clearNoticeTimers()
       // toolsExpanded rides through: it is a view preference, not session
       // data, and having /clear silently re-collapse everything would be a
       // small betrayal of a setting the user just chose.

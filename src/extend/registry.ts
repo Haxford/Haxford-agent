@@ -137,7 +137,7 @@ export const ToolShape = z.object({
  */
 export const RESERVED_COMMANDS: readonly string[] = Object.freeze([
   "help", "model", "connect", "sessions", "compact",
-  "init", "mode", "clear", "exit", "reload",
+  "init", "mode", "clear", "exit", "reload", "skills", "agents",
 ])
 
 /** Normalize a command name as typed by an extension author. */

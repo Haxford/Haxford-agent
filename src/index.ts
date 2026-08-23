@@ -9,6 +9,8 @@
 ;(globalThis as Record<string, unknown>)["AI_SDK_LOG_WARNINGS"] = false
 
 import { render } from "ink"
+import { homedir } from "node:os"
+import path from "node:path"
 import React from "react"
 
 import { compactConversation, runAgentLoop } from "./agent/loop.ts"
@@ -25,7 +27,7 @@ import {
 } from "./agent/agents.ts"
 import { loadConfig, saveGlobalProviderCredential } from "./config/index.ts"
 import { loadProjectModel, saveProjectModel } from "./config/state.ts"
-import { loadExtensibility, reloadExtensions, type ExtensibilityState } from "./extend/index.ts"
+import { listSkills, loadExtensibility, reloadExtensions, type ExtensibilityState } from "./extend/index.ts"
 import { createAskHandler, type Mode } from "./permission/engine.ts"
 import { defaultModelSpec, fetchOpenRouterCatalog, listKnownModels, refreshOpenRouterCatalog, verifyProviderKey } from "./providers/index.ts"
 import { APP_VERSION } from "./providers/attribution.ts"
@@ -41,6 +43,7 @@ import {
 import { allTools } from "./tools/index.ts"
 import { createApprovalBridge } from "./tui/approval.ts"
 import { HaxfordApp } from "./tui/app.tsx"
+import type { ListingRow } from "./tui/components/ListingPanel.tsx"
 import type { ModelOption } from "./tui/components/ModelPicker.tsx"
 import { createTuiStore } from "./tui/store.ts"
 import type { HaxfordConfig } from "./types/config.ts"
@@ -400,6 +403,49 @@ async function runTui(
     })()
   }
 
+  /**
+   * Where a loaded file came from, as a user would type it.
+   *
+   * The whole point of showing a source is that the user can go and edit the
+   * thing, so an absolute path with their home directory spelled out is worse
+   * than the `~/…` they would type themselves. A path under the project shows
+   * relative to it, which is how it appears in the repository.
+   */
+  const displayDir = (file: string): string => {
+    const dir = path.dirname(file)
+    const home = homedir()
+    if (dir === cwd || dir.startsWith(`${cwd}/`)) {
+      return `./${path.relative(cwd, dir)}` || "."
+    }
+    if (dir === home || dir.startsWith(`${home}/`)) {
+      return `~/${path.relative(home, dir)}`
+    }
+    return dir
+  }
+
+  // /skills — read straight off the extend module's live index, which is what
+  // the system prompt reads too, so a /reload is reflected here with no wiring
+  // between the two. No scanning happens on this path.
+  const listSkillRows = (): ListingRow[] =>
+    listSkills().map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      source: displayDir(skill.path),
+    }))
+
+  // /agents — the same scan the loop uses. Warnings (an unreadable file, a
+  // skipped symlink) surface as notices rather than being swallowed, since a
+  // missing agent is exactly what the user opened this listing to explain.
+  const listAgentRows = async (): Promise<ListingRow[]> => {
+    const { agents, warnings } = await getAgents(cwd)
+    for (const w of warnings) store.dispatch({ type: "notice", message: w })
+    return agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description,
+      source: `${displayDir(agent.path)} (${agent.source})`,
+    }))
+  }
+
   // Model picker contents: curated per-provider lists (availability-honest)
   // enriched + extended by the live OpenRouter catalog (label/ctx/pricing).
   // Offline or unauthenticated, the picker degrades to the curated list.
@@ -523,6 +569,8 @@ async function runTui(
       },
       onCompact,
       onReload,
+      listSkills: listSkillRows,
+      listAgents: listAgentRows,
       onPrompt,
       onExit: () => {
         bridge.cancel()

@@ -173,7 +173,17 @@ function ToolView({
   )
 }
 
-function TextBlock({ part, role }: { part: TextPart; role: Message["role"] }): React.ReactElement {
+/**
+ * Exported (alongside the other pure pieces in this file) so tests can walk
+ * its returned element tree directly: `ink-testing-library`'s captured frame
+ * carries no ANSI styling at all unless the process was started with
+ * `FORCE_COLOR` set (chalk's colour-support detection is cached at import
+ * time, so setting it from inside a running test has no effect) — so `bold`
+ * cannot be asserted from `lastFrame()` output in this suite. Calling this
+ * directly is a plain function call (no hooks), safe outside of Ink's own
+ * render.
+ */
+export function TextBlock({ part, role }: { part: TextPart; role: Message["role"] }): React.ReactElement {
   if (role === "user") {
     // The user's own words, marked by a single coloured chevron — and left
     // exactly as typed. Rendering the user's markdown would mean showing them
@@ -182,7 +192,10 @@ function TextBlock({ part, role }: { part: TextPart; role: Message["role"] }): R
     return (
       <Box flexDirection="column">
         {part.text.split("\n").map((line, i) => (
-          <Text key={i}>
+          // Bold on the whole line, not just the chevron: a same-weight dim
+          // line next to dim tool output is easy to lose. The chevron carries
+          // its own colour on top so it still reads as the marker at a glance.
+          <Text key={i} bold>
             <Text color={theme.user}>{"› "}</Text>
             {line}
           </Text>
@@ -298,7 +311,11 @@ export function Transcript({ messages, notices, toolsExpanded = false }: Transcr
     <Box flexDirection="column">
       {messages.map((m) => {
         const multiline = messageIsMultiline(m)
-        const marginTop = separatorBefore(prevMultiline, multiline)
+        // A user turn always gets a blank line above it, whatever its
+        // neighbour's shape — it has to be unmistakable where your own turn
+        // starts, not just "sometimes there's a gap." Every other pairing
+        // still follows the adaptive multiline rule.
+        const marginTop = m.role === "user" ? 1 : separatorBefore(prevMultiline, multiline)
         prevMultiline = multiline
         return (
           <Box key={m.id} flexDirection="column" marginTop={marginTop}>

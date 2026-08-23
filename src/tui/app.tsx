@@ -9,6 +9,7 @@ import { Banner, HEADER_LINES } from "./components/Banner.tsx"
 import { Composer, type ComposerHandle } from "./components/Composer.tsx"
 import { ConnectDialog } from "./components/ConnectDialog.tsx"
 import { HelpPanel, HELP_TEXT, COMMANDS, type CommandRow } from "./components/HelpPanel.tsx"
+import { ListingPanel, type ListingRow } from "./components/ListingPanel.tsx"
 import { ModelPicker, normalizeModels, type ModelOption, type ProviderCatalogEntry } from "./components/ModelPicker.tsx"
 import { PermissionDialog } from "./components/PermissionDialog.tsx"
 import { SessionPicker } from "./components/SessionPicker.tsx"
@@ -122,6 +123,7 @@ export type SlashAction =
   | { kind: "model" }
   | { kind: "compact" }
   | { kind: "reload" }
+  | { kind: "listing"; listing: "skills" | "agents" }
   | { kind: "mode"; mode: "build" | "auto" | "plan" }
   | { kind: "connect" }
   | { kind: "notice"; message: string }
@@ -144,6 +146,8 @@ export function parseSlashCommand(
   if (cmd === "/model") return { kind: "model" }
   if (cmd === "/compact") return { kind: "compact" }
   if (cmd === "/reload") return { kind: "reload" }
+  if (cmd === "/skills") return { kind: "listing", listing: "skills" }
+  if (cmd === "/agents") return { kind: "listing", listing: "agents" }
   if (cmd === "/init") return { kind: "prompt", text: INIT_PROMPT }
   if (cmd === "/connect") return { kind: "connect" }
   if (cmd === "/mode") return { kind: "mode", mode: nextMode(mode) }
@@ -156,7 +160,7 @@ export function parseSlashCommand(
 }
 
 /** Commands that take no argument and can be submitted immediately on accept. */
-export const NO_ARG_COMMANDS = new Set(["/help", "/sessions", "/compact", "/reload", "/clear", "/exit", "/connect"])
+export const NO_ARG_COMMANDS = new Set(["/help", "/sessions", "/compact", "/reload", "/clear", "/exit", "/connect", "/skills", "/agents"])
 
 /** Whether a command token accepts an argument (so autocomplete only completes the token). */
 export function takesArg(command: string): boolean {
@@ -282,6 +286,15 @@ export interface HaxfordAppProps {
    * host" notice instead of crashing.
    */
   onReload?(): void
+  /**
+   * /skills — rows for the loaded-skill listing. The host owns the source of
+   * truth (the extension registry's live index), so a `/reload` is reflected
+   * without any wiring between the two. May be sync or async; both are
+   * awaited. Optional: an unwired host reports that rather than crashing.
+   */
+  listSkills?(): ListingRow[] | Promise<ListingRow[]>
+  /** /agents — rows for the named-agent listing. Same contract as listSkills. */
+  listAgents?(): ListingRow[] | Promise<ListingRow[]>
   /** /mode — host switches the permission mode (host owns rerender). */
   onModeChange(mode: "build" | "auto" | "plan"): void
   /** /exit or ctrl+c on empty composer */
@@ -312,12 +325,26 @@ function usePendingRequest(bridge: ApprovalBridge): PermissionRequest | undefine
   )
 }
 
+/**
+ * A read-only listing overlay (`/skills`, `/agents`).
+ *
+ * The rows are fetched through a host hook that may be async (agents are read
+ * from disk), so the overlay opens in `loading` and settles into `ready`. It
+ * carries its own title and empty-state text, which is what lets one slot and
+ * one component serve both commands.
+ */
+type ListingState =
+  | { kind: "idle" }
+  | { kind: "loading"; title: string }
+  | { kind: "ready"; title: string; rows: ListingRow[]; empty: string }
+
 /** Local UI state not owned by the agent reducer (slash help, pickers). */
 interface UiFlags {
   showHelp: boolean
   showSessions: LoadState
   showModelPicker: boolean
   showConnect: boolean
+  showListing: ListingState
 }
 
 export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
@@ -338,6 +365,8 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     onProviderConnect,
     onCompact,
     onReload,
+    listSkills,
+    listAgents,
     onModeChange,
     onExit,
     onNewSession,
@@ -352,6 +381,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     showSessions: { kind: "idle" },
     showModelPicker: false,
     showConnect: false,
+    showListing: { kind: "idle" },
   })
 
   // A transient one-line status hint rendered just above the composer, then
@@ -506,9 +536,15 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       onAbort()
       return
     }
-    // Escape closes any open overlay (help / sessions picker / model picker).
-    if (key.escape && (ui.showHelp || ui.showSessions.kind !== "idle" || ui.showModelPicker)) {
-      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: false }))
+    // Escape closes any open overlay (help / sessions / model / listing).
+    if (
+      key.escape &&
+      (ui.showHelp ||
+        ui.showSessions.kind !== "idle" ||
+        ui.showModelPicker ||
+        ui.showListing.kind !== "idle")
+    ) {
+      setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: false, showListing: { kind: "idle" } }))
       return
     }
     // Tab in the empty-ish, idle, overlay-free composer cycles the permission
@@ -529,14 +565,14 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
       composerRef.current?.set(composerValue)
       return
     }
-    if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker && !ui.showConnect) {
+    if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker && !ui.showConnect && ui.showListing.kind === "idle") {
       changeMode(nextMode(mode))
     }
   })
 
 
   const resetOverlays = useCallback(
-    () => setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: false })),
+    () => setUi((u) => ({ ...u, showHelp: false, showSessions: { kind: "idle" }, showModelPicker: false, showConnect: false, showListing: { kind: "idle" } })),
     [],
   )
 
@@ -588,6 +624,55 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           reload()
           resetOverlays()
           return
+        case "listing": {
+          // A listing is a read-only "what is loaded" view, so it opens as an
+          // overlay rather than a transcript notice: notices keep only the
+          // last few lines and wedge themselves above the next reply, and the
+          // whole point here is a table the user can read down.
+          const skills = action.listing === "skills"
+          const fetch = skills ? listSkills : listAgents
+          if (fetch === undefined) {
+            store.dispatch({
+              type: "notice",
+              message: `${action.listing} listing not wired in this host`,
+            })
+            resetOverlays()
+            return
+          }
+          const title = skills ? "skills" : "agents"
+          const empty = skills
+            ? "none yet — add ~/.haxford/skills/<name>/SKILL.md; see ~/.haxford/EXTENDING.md"
+            : "none yet — add ~/.haxford/agents/<name>.md; see ~/.haxford/EXTENDING.md"
+          setUi((u) => ({
+            ...u,
+            showHelp: false,
+            showSessions: { kind: "idle" },
+            showModelPicker: false,
+            showConnect: false,
+            showListing: { kind: "loading", title },
+          }))
+          void (async () => {
+            let rows: ListingRow[]
+            try {
+              rows = await fetch()
+            } catch (error) {
+              store.dispatch({
+                type: "notice",
+                message: `could not list ${title}: ${error instanceof Error ? error.message : String(error)}`,
+              })
+              setUi((u) => ({ ...u, showListing: { kind: "idle" } }))
+              return
+            }
+            // Only settle if this listing is still the one on screen: the user
+            // may have hit esc, or opened the other listing, while we awaited.
+            setUi((u) =>
+              u.showListing.kind === "loading" && u.showListing.title === title
+                ? { ...u, showListing: { kind: "ready", title, rows, empty } }
+                : u,
+            )
+          })()
+          return
+        }
         case "mode":
           // Transient hint only — see changeMode. Nothing reaches the transcript.
           changeMode(action.mode)
@@ -617,7 +702,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           return
       }
     },
-    [changeMode, mode, onAbort, onCompact, onConnectProvider, onExit, onNewSession, onPrompt, onReload, pending, providerCatalog, resetOverlays, showHint, store],
+    [changeMode, listAgents, listSkills, mode, onAbort, onCompact, onConnectProvider, onExit, onNewSession, onPrompt, onReload, pending, providerCatalog, resetOverlays, showHint, store],
   )
 
   // The composer stays live while a run is in flight: submitting there
@@ -764,7 +849,12 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
   }, [running])
 
   const overlay =
-    ui.showHelp || ui.showModelPicker || ui.showConnect || ui.showSessions.kind !== "idle" || pending !== undefined
+    ui.showHelp ||
+    ui.showModelPicker ||
+    ui.showConnect ||
+    ui.showSessions.kind !== "idle" ||
+    ui.showListing.kind !== "idle" ||
+    pending !== undefined
 
   // The banner leads the static region, so it prints once per session and is
   // never redrawn. A `/clear` or a resume bumps the epoch, which remounts the
@@ -870,6 +960,23 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           </Box>
         ) : null}
 
+        {/* /skills and /agents: one slot, one component, two commands. */}
+        {ui.showListing.kind !== "idle" ? (
+          <Box marginTop={1}>
+            {ui.showListing.kind === "loading" ? (
+              <Box paddingLeft={2}>
+                <Text dimColor>{`reading ${ui.showListing.title}…`}</Text>
+              </Box>
+            ) : (
+              <ListingPanel
+                title={ui.showListing.title}
+                rows={ui.showListing.rows}
+                empty={ui.showListing.empty}
+              />
+            )}
+          </Box>
+        ) : null}
+
         {ui.showSessions.kind === "loading" ? (
           <Box marginTop={1} {...railProps()} paddingLeft={1}>
             <Text dimColor>{"loading sessions\u2026"}</Text>
@@ -925,6 +1032,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
               verb={activityVerb(state.messages)}
               startedAt={runStartedAt}
               usage={state.usage}
+              queued={state.queue.length}
             />
           </Box>
         ) : null}

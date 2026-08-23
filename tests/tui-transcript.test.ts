@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Text as InkText } from "ink"
 import { render } from "ink-testing-library"
 import React from "react"
 
@@ -13,10 +14,12 @@ import {
   partIsMultiline,
   previewLines,
   separatorBefore,
+  TextBlock,
   toolIsExpanded,
   Transcript,
 } from "../src/tui/components/Transcript.tsx"
 import { createTuiStore, type TuiStore } from "../src/tui/store.ts"
+import { theme } from "../src/tui/theme.ts"
 
 function flush(ms = 40): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -342,5 +345,183 @@ describe("assistant prose is markdown; the user's is not", () => {
     )
     expect(frame).toContain("run **this** and `that`")
     expect(frame).toContain("›")
+  })
+})
+
+describe("an unknown slash command never pollutes the transcript", () => {
+  function mount(store: TuiStore, prompts: string[]): { inst: ReturnType<typeof render> } {
+    const inst = render(
+      React.createElement(HaxfordApp, {
+        store,
+        bridge: createApprovalBridge(),
+        model: "mock/demo",
+        mode: "build",
+        models: ["mock/demo"],
+        onPrompt: (t: string) => { prompts.push(t) },
+        onAbort: () => {},
+        onModelChange: () => {},
+        onModeChange: () => {},
+        onExit: () => {},
+        onNewSession: () => {},
+        listSessions: async () => [],
+        onResumeSession: () => {},
+      }),
+    )
+    return { inst }
+  }
+
+  test("typing an unknown command creates no message — only a notice", async () => {
+    const store = createTuiStore([])
+    const prompts: string[] = []
+    const { inst } = mount(store, prompts)
+
+    inst.stdin.write("/notacommand")
+    await flush()
+    inst.stdin.write("\r")
+    await flush()
+
+    // Nothing was ever sent as a turn, and nothing landed in the message
+    // list — the composer's own submitted text never becomes a role: "user"
+    // message for a command that doesn't exist.
+    expect(prompts).toEqual([])
+    expect(store.getState().messages).toEqual([])
+    expect(store.getState().notices).toEqual(["unknown command: /notacommand"])
+    inst.unmount()
+  })
+
+  test("a real prompt, for contrast, still reaches the host unchanged", async () => {
+    const store = createTuiStore([])
+    const prompts: string[] = []
+    const { inst } = mount(store, prompts)
+
+    inst.stdin.write("fix the bug in src/index.ts")
+    await flush()
+    inst.stdin.write("\r")
+    await flush()
+
+    expect(prompts).toEqual(["fix the bug in src/index.ts"])
+    // The host — not the TUI — owns turning a real prompt into a message;
+    // this store was never wired to a host, so it staying empty here is
+    // expected and not a regression (see the "prompts reached the host"
+    // assertion above, which is the thing this test actually proves).
+    expect(store.getState().messages).toEqual([])
+    inst.unmount()
+  })
+
+  test("a known command still runs unchanged (not swallowed by the unknown path)", async () => {
+    const store = createTuiStore([])
+    const prompts: string[] = []
+    const { inst } = mount(store, prompts)
+
+    inst.stdin.write("/mode auto")
+    await flush()
+    inst.stdin.write("\r")
+    await flush()
+
+    expect(prompts).toEqual([])
+    expect(store.getState().messages).toEqual([])
+    // No "unknown command" notice for a real one.
+    expect(store.getState().notices).toEqual([])
+    inst.unmount()
+  })
+
+  test("the notice does not linger forever — it clears on its own", async () => {
+    const store = createTuiStore([], { noticeTtlMs: 50 })
+    const prompts: string[] = []
+    const { inst } = mount(store, prompts)
+
+    inst.stdin.write("/nope")
+    await flush()
+    inst.stdin.write("\r")
+    await flush()
+    expect(store.getState().notices).toEqual(["unknown command: /nope"])
+
+    await flush(90)
+    expect(store.getState().notices).toEqual([])
+    inst.unmount()
+  })
+})
+
+describe("user turns are unmistakably yours", () => {
+  test("TextBlock bolds the whole line, not just the chevron", () => {
+    // ink-testing-library's captured frame carries no ANSI styling at all
+    // unless the process starts with FORCE_COLOR set — chalk's colour
+    // support is detected once at import time, so toggling the env var from
+    // inside a running test has no effect. Asserted on the actual element
+    // tree instead, which is what the frame is built from either way.
+    const el = TextBlock({
+      part: { id: "t", type: "text", text: "fix the bug" },
+      role: "user",
+    }) as React.ReactElement<{ children: React.ReactElement | React.ReactElement[] }>
+
+    const lines = React.Children.toArray(el.props.children) as React.ReactElement[]
+    expect(lines).toHaveLength(1)
+    const line = lines[0]!
+    expect(line.type).toBe(InkText)
+    // Bold on the line itself — covers the message text, not only the mark.
+    expect((line.props as { bold?: boolean }).bold).toBe(true)
+
+    const lineChildren = React.Children.toArray(
+      (line.props as { children: React.ReactNode }).children,
+    )
+    const chevron = lineChildren[0] as React.ReactElement
+    expect(chevron.type).toBe(InkText)
+    expect((chevron.props as { color?: string }).color).toBe(theme.user)
+    // theme.user is a real, high-contrast named colour, not the near-invisible
+    // structural grey everything else in the transcript uses.
+    expect(theme.user).not.toBe(theme.muted)
+    expect(theme.user).not.toBe(theme.dim)
+    expect(theme.user.length).toBeGreaterThan(0)
+  })
+
+  test("a multi-line user message bolds every line", () => {
+    const el = TextBlock({
+      part: { id: "t", type: "text", text: "line one\nline two" },
+      role: "user",
+    }) as React.ReactElement<{ children: React.ReactElement[] }>
+    const lines = React.Children.toArray(el.props.children) as React.ReactElement[]
+    expect(lines).toHaveLength(2)
+    for (const line of lines) {
+      expect((line.props as { bold?: boolean }).bold).toBe(true)
+    }
+  })
+
+  test("a user turn always gets a blank line above it, even between two single-line messages", () => {
+    const priorAssistant = assistant([{ id: "t", type: "text", text: "done" }])
+    const userTurn: Message = {
+      id: "u1",
+      sessionID: "s",
+      role: "user",
+      time: { created: 0 },
+      parts: [{ id: "t", type: "text", text: "now do the next thing" }],
+    }
+    // Both are single-line, so the adaptive multiline rule alone would give
+    // zero lines of separation here — role has to force it.
+    expect(messageIsMultiline(priorAssistant)).toBe(false)
+    expect(messageIsMultiline(userTurn)).toBe(false)
+
+    const frame = frameOf(
+      React.createElement(Transcript, { messages: [priorAssistant, userTurn] }),
+    )
+    const lines = frame.split("\n")
+    const userLineIndex = lines.findIndex((l) => l.includes("now do the next thing"))
+    expect(userLineIndex).toBeGreaterThan(0)
+    expect(lines[userLineIndex - 1]?.trim()).toBe("")
+  })
+
+  test("two consecutive user turns still each get their own separation", () => {
+    const first: Message = {
+      id: "u1", sessionID: "s", role: "user", time: { created: 0 },
+      parts: [{ id: "t", type: "text", text: "first" }],
+    }
+    const second: Message = {
+      id: "u2", sessionID: "s", role: "user", time: { created: 0 },
+      parts: [{ id: "t", type: "text", text: "second" }],
+    }
+    const frame = frameOf(React.createElement(Transcript, { messages: [first, second] }))
+    const lines = frame.split("\n")
+    const secondIndex = lines.findIndex((l) => l.includes("second"))
+    expect(secondIndex).toBeGreaterThan(0)
+    expect(lines[secondIndex - 1]?.trim()).toBe("")
   })
 })

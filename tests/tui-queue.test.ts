@@ -342,3 +342,122 @@ describe("queued prompts render above the composer", () => {
     expect(frame).not.toContain("more queued")
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/* End-to-end: typing while RUNNING queues, and the queue clears on idle       */
+/* -------------------------------------------------------------------------- */
+
+describe("queueing while the agent is running (whole cycle)", () => {
+  /**
+   * The composer must stay live during a run — that is the entire premise of
+   * queueing. If it were disabled, enter would never reach the host and there
+   * would be nothing to queue.
+   */
+  test("enter during a run reaches the host rather than being swallowed", async () => {
+    const submitted: string[] = []
+    const { store, inst } = mount({ onPrompt: (t) => submitted.push(t) })
+    store.dispatch({ type: "turn.start", turn: 1 })
+    await flush()
+
+    inst.stdin.write("while running")
+    await flush()
+    inst.stdin.write("\r")
+    await flush()
+
+    expect(submitted).toEqual(["while running"])
+  })
+
+  test("a queued prompt is visible above the composer while the run continues", async () => {
+    const { store, inst } = mount()
+    store.dispatch({ type: "turn.start", turn: 1 })
+    store.enqueue("second thing")
+    await flush()
+
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("second thing")
+    // And the count rides the activity line, which only exists while running.
+    expect(frame).toContain("1 queued")
+  })
+
+  test("the count tracks the queue and disappears when it drains", async () => {
+    const { store, inst } = mount()
+    store.dispatch({ type: "turn.start", turn: 1 })
+    store.enqueue("a")
+    store.enqueue("b")
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("2 queued")
+
+    store.dequeue()
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("1 queued")
+
+    store.dequeue()
+    await flush()
+    // Match the count token specifically: the composer placeholder while
+    // running also says "queued", and asserting on the bare word would pass
+    // or fail for the wrong reason.
+    expect(inst.lastFrame() ?? "").not.toMatch(/\d+ queued/)
+  })
+
+  test("no count is shown when nothing is queued, running or not", async () => {
+    const { store, inst } = mount()
+    store.dispatch({ type: "turn.start", turn: 1 })
+    await flush()
+    expect(inst.lastFrame() ?? "").not.toMatch(/\d+ queued/)
+  })
+
+  test("going idle with the queue drained leaves no queue chrome behind", async () => {
+    const { store, inst } = mount()
+    store.dispatch({ type: "turn.start", turn: 1 })
+    store.enqueue("pending one")
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("pending one")
+
+    // The host flushes from the front as the loop goes idle.
+    expect(store.dequeue()).toBe("pending one")
+    store.dispatch({ type: "loop.end", reason: "end_turn" })
+    await flush()
+
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).not.toContain("pending one")
+    expect(frame).not.toMatch(/\d+ queued/)
+  })
+
+  test("the activity line stays on one row at 80 columns with a queue", async () => {
+    const store = createTuiStore([])
+    const bridge = createApprovalBridge()
+    const inst = renderFixed(
+      React.createElement(HaxfordApp, {
+        store,
+        bridge,
+        model: "openrouter/z-ai/glm-4.6",
+        mode: "build" as const,
+        models: ["openrouter/z-ai/glm-4.6"],
+        onPrompt: () => {},
+        onAbort: () => {},
+        onModelChange: () => {},
+        onModeChange: () => {},
+        onExit: () => {},
+        onNewSession: () => {},
+        listSessions: async () => [],
+        onResumeSession: () => {},
+      }),
+      { columns: 80 },
+    )
+    store.dispatch({ type: "turn.start", turn: 1 })
+    store.dispatch({
+      type: "usage",
+      messageID: "m1",
+      usage: { input: 123456, output: 45678, reasoning: 0 },
+    })
+    for (let i = 0; i < 12; i++) store.enqueue(`queued prompt number ${i}`)
+    await flush()
+
+    // The banner-wrap lesson: every row of chrome has to fit, or the pin math
+    // that reserves exactly one line for this one is wrong.
+    for (const line of (inst.lastFrame() ?? "").split("\n")) {
+      expect([...line].length).toBeLessThanOrEqual(80)
+    }
+    expect(inst.lastFrame() ?? "").toContain("12 queued")
+  })
+})

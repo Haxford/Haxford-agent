@@ -17,6 +17,8 @@ export const COMMANDS: CommandRow[] = [
   { command: "/sessions", description: "resume a previous session" },
   { command: "/compact", description: "compact the conversation now" },
   { command: "/reload", description: "rescan skills, extensions and themes" },
+  { command: "/skills", description: "list loaded skills and where they came from" },
+  { command: "/agents", description: "list named agents you can run with --agent" },
   { command: "/init", description: "analyze codebase and create/improve AGENTS.md" },
   { command: "/mode", description: "switch permission mode (build | auto | plan)" },
   { command: "/clear", description: "start a fresh session" },

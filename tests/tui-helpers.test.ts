@@ -26,6 +26,7 @@ import {
   type ProviderCatalogEntry,
 } from "../src/tui/components/ModelPicker.tsx"
 import { clampCursor, matchCommands, NO_ARG_COMMANDS, parseSlashCommand, takesArg } from "../src/tui/app.tsx"
+import { COMMANDS } from "../src/tui/components/HelpPanel.tsx"
 
 describe("StatusBar.shortModel", () => {
   test("drops the provider, which the picker already named", () => {
@@ -284,7 +285,10 @@ describe("Slash autocomplete: matchCommands", () => {
     expect(matchCommands("")).toEqual([])
   })
   test("exact / and short prefixes match all", () => {
-    expect(matchCommands("/").length).toBe(10)
+    // Derived from the table rather than hardcoded: this asserts "a bare
+    // slash offers everything", which is the actual contract, and adding a
+    // command should not need a number here edited to match.
+    expect(matchCommands("/").length).toBe(COMMANDS.length)
     expect(matchCommands("/m").map((r) => r.command)).toEqual(["/model", "/mode"])
   })
   test("case-insensitive", () => {

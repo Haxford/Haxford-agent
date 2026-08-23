@@ -313,6 +313,16 @@ export interface ActivityLineProps {
   usage: TotalUsage
   /** Injectable clock, for deterministic tests. */
   now?: () => number
+  /**
+   * Prompts waiting behind this run. Shown as a count, omitted at zero.
+   *
+   * This line is where it belongs: it exists only while a run is in flight,
+   * which is exactly the window in which anything can be queued. The footer
+   * below the composer is the one row with a hard width budget (see the
+   * banner-wrap lesson), so a figure that only sometimes appears does not go
+   * there.
+   */
+  queued?: number
 }
 
 /**
@@ -325,7 +335,7 @@ export interface ActivityLineProps {
  * spinner tick: that tick re-renders only the `<Spinner>` context consumers,
  * not this component's body, so a render-time `Date.now()` here would freeze.
  */
-export function ActivityLine({ verb, startedAt, usage, now }: ActivityLineProps): React.ReactElement {
+export function ActivityLine({ verb, startedAt, usage, now, queued }: ActivityLineProps): React.ReactElement {
   const clock = now ?? Date.now
   const [elapsedMs, setElapsedMs] = React.useState(() => clock() - startedAt)
   useInterval(() => setElapsedMs(clock() - startedAt), 1000)
@@ -344,6 +354,12 @@ export function ActivityLine({ verb, startedAt, usage, now }: ActivityLineProps)
         <>
           <Text dimColor>·</Text>
           <Text dimColor>{`↑${formatTokens(usage.input)} ↓${formatTokens(usage.output)}`}</Text>
+        </>
+      ) : null}
+      {queued !== undefined && queued > 0 ? (
+        <>
+          <Text dimColor>·</Text>
+          <Text color={theme.accent} dimColor>{`${queued} queued`}</Text>
         </>
       ) : null}
       <Text dimColor>·</Text>
