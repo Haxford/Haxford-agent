@@ -18,6 +18,7 @@ import { ActivityLine, StatusBar, TurnOutcome } from "./components/StatusBar.tsx
 import { MessageView, Transcript } from "./components/Transcript.tsx"
 import { useTerminalSize } from "./hooks.ts"
 import {
+  CHROME_GAP_LINES,
   FOOTER_LINES,
   MAX_QUEUE_LINES_SHOWN,
   bottomPadding,
@@ -930,11 +931,17 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
 
         {/*
           The chrome stack: everything below here is fixed-height and always
-          on screen, separated from the transcript by exactly one blank row.
+          on screen, separated from whatever's above by CHROME_GAP_LINES — but
+          only when we're the ones responsible for that separation. An open
+          overlay already supplies its own lead-in margin and ends right where
+          our rule begins, so stacking a second gap on top of it is exactly
+          the padding this frame is trying not to draw once an overlay (whose
+          height we don't measure) has taken over — see `padding` above,
+          which stands down for the same reason on the same condition.
           One margin for the whole group rather than one per member is what
           lets the pin math treat its height as a constant.
         */}
-        <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="column" marginTop={overlay ? 0 : CHROME_GAP_LINES}>
         {/*
           Transient chrome feedback (mode switch, ctrl+c confirmation). It sits
           directly above the input — the band the eye is already trained

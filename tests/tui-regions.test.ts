@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { render } from "ink-testing-library"
 import React from "react"
 
 import type { Message } from "../src/types/message.ts"
@@ -11,6 +10,7 @@ import { SpinnerProvider } from "../src/tui/components/Spinner.tsx"
 import { StatusBar, TurnOutcome, shortModel } from "../src/tui/components/StatusBar.tsx"
 import { createTuiStore, type TuiStore } from "../src/tui/store.ts"
 import { modeColor, theme } from "../src/tui/theme.ts"
+import { renderFixed } from "./helpers/ink.ts"
 
 function flush(ms = 40): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -18,17 +18,20 @@ function flush(ms = 40): Promise<void> {
 
 const NO_USAGE = { input: 0, output: 0, reasoning: 0 }
 
-// Ink measures the real stdout; runners differ (CI pty is 80 cols), which
-// changes wrapping and therefore frame heights. Pin it for determinism.
-process.stdout.columns = 100
-process.stdout.rows = 40
-
+// `renderFixed` (tests/helpers/ink.ts) renders against its own 100x40 fake
+// terminal — never `process.stdout` — so every frame here is deterministic
+// regardless of the real runner's pty (CI's included) or lack of one. Do NOT
+// reintroduce `process.stdout.columns =` pins here: `ink-testing-library`'s
+// own `render()` never read them (its Stdout.columns is hardcoded to 100
+// internally, and it reports no `rows` at all), which is what let a "≤2 blank
+// rows" budget silently become 3 in the first place — see the `bottomPadding`
+// fix in src/tui/layout.ts for the real cause.
 function mount(overrides: Partial<Parameters<typeof HaxfordApp>[0]> = {}): {
   store: TuiStore
-  inst: ReturnType<typeof render>
+  inst: ReturnType<typeof renderFixed>
 } {
   const store = createTuiStore([])
-  const inst = render(
+  const inst = renderFixed(
     React.createElement(HaxfordApp, {
       store,
       bridge: createApprovalBridge(),
@@ -66,7 +69,7 @@ function count(haystack: string, needle: string): number {
 }
 
 function frameOf(el: React.ReactElement): string {
-  const inst = render(el)
+  const inst = renderFixed(el)
   const out = (inst.lastFrame() ?? "").split("\n").map((l) => l.trimEnd()).join("\n")
   inst.unmount()
   return out
@@ -320,9 +323,10 @@ describe("bottom pinning in the live frame", () => {
   test("a fresh session lands the footer on the last row", () => {
     const { inst } = mount()
     const lines = (inst.lastFrame() ?? "").split("\n")
-    // ink-testing-library reports no rows, so the layout uses the 24-row
-    // default. The footer is still the last row — but the frame no longer
-    // fills the viewport with filler to get there.
+    // renderFixed's 40-row terminal (see tests/helpers/ink.ts) leaves plenty
+    // of free space; the footer is still the last row of the FRAME (not the
+    // viewport) — the frame no longer fills unused rows with filler to get
+    // there.
     expect(lines[lines.length - 1]).toContain("(build)")
     inst.unmount()
   })
@@ -427,3 +431,4 @@ describe("colour roles", () => {
     expect(shortModel("anthropic/claude-sonnet-5")).toBe("claude-sonnet-5")
   })
 })
+

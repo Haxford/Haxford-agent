@@ -69,18 +69,50 @@ export async function startMcp(cwd: string): Promise<McpStartupResult> {
   const { config, warnings } = await loadMcpConfig(cwd)
   const connections: McpServerConnection[] = []
   const tools: Tool[] = []
+  const seenToolIDs = new Set<string>()
 
   for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
     const connection = createMcpServerConnection(name, serverConfig, { cwd })
     connections.push(connection)
     if (!config.autoStart) continue
 
+    // A server entry is `command` + `args` — an arbitrary program, spawned
+    // with no prompt. `<cwd>/.haxford/mcp.json` ships with any repository you
+    // clone, so auto-starting a project-defined server would make "run
+    // haxford in this directory" enough to execute whatever the repository
+    // asked for. Project servers are therefore listed but never spawned here;
+    // they connect lazily on first deliberate use (`ensureConnected`, or a
+    // `/mcp start`), which is a decision the user makes rather than one the
+    // working directory makes for them. Global servers, which the user wrote
+    // in their own home directory, still start eagerly.
+    if (serverConfig.source === "project") {
+      warnings.push(
+        `mcp server ${JSON.stringify(name)} is defined by this project's ` +
+          `.haxford/mcp.json and runs ${JSON.stringify(serverConfig.command)} — ` +
+          `not started automatically. Start it deliberately if you trust this repository.`,
+      )
+      continue
+    }
+
     const listed = await connection.listTools()
     if (!listed.ok) {
       warnings.push(`mcp server ${JSON.stringify(name)}: ${listed.error}`)
       continue
     }
-    tools.push(...bridgeMcpTools(name, connection, listed.tools))
+    for (const tool of bridgeMcpTools(name, connection, listed.tools, warnings)) {
+      // Two servers can each export a tool that lands on the same id. Merging
+      // both would let whichever came last silently shadow the other in the
+      // tool set the model is handed.
+      if (seenToolIDs.has(tool.id)) {
+        warnings.push(
+          `mcp server ${JSON.stringify(name)}: tool id ${JSON.stringify(tool.id)} ` +
+            `is already provided by another server — skipped`,
+        )
+        continue
+      }
+      seenToolIDs.add(tool.id)
+      tools.push(tool)
+    }
   }
 
   return { connections, tools, warnings }

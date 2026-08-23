@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { render } from "ink-testing-library"
 import React from "react"
 
 import type { SessionInfo } from "../src/types/session.ts"
@@ -11,6 +10,7 @@ import { ModelPicker, type ProviderCatalogEntry } from "../src/tui/components/Mo
 import { SlashAutocomplete } from "../src/tui/components/SlashAutocomplete.tsx"
 import { COMMANDS } from "../src/tui/components/HelpPanel.tsx"
 import { createTuiStore } from "../src/tui/store.ts"
+import { renderFixed } from "./helpers/ink.ts"
 
 /**
  * NOTE: @inkjs/ui TextInput does not receive stdin in the ink-testing-library
@@ -42,7 +42,7 @@ function mount(overrides: {
   const calls: { abort: number; model: string[]; mode: ("build" | "auto" | "plan")[]; compact: number } = {
     abort: 0, model: [], mode: [], compact: 0,
   }
-  const inst = render(
+  const inst = renderFixed(
     React.createElement(HaxfordApp, {
       store,
       bridge,
@@ -322,7 +322,7 @@ describe("HaxfordApp /help listing", () => {
 
 describe("SlashAutocomplete popup", () => {
   test("renders nothing when there are no matches", () => {
-    const inst = render(React.createElement(SlashAutocomplete, { matches: [], cursor: 0 }))
+    const inst = renderFixed(React.createElement(SlashAutocomplete, { matches: [], cursor: 0 }))
     // Null element -> Ink emits an empty/undefined frame (no popup content).
     const frame = inst.lastFrame() ?? ""
     expect(frame).not.toContain("/model")
@@ -331,7 +331,7 @@ describe("SlashAutocomplete popup", () => {
 
   test("lists matching commands with descriptions, marks the selected row", () => {
     const matches = COMMANDS.filter((c) => c.command.startsWith("/m")) // /model, /mode
-    const inst = render(React.createElement(SlashAutocomplete, { matches, cursor: 0 }))
+    const inst = renderFixed(React.createElement(SlashAutocomplete, { matches, cursor: 0 }))
     const frame = inst.lastFrame() ?? ""
     expect(frame).toContain("/model")
     expect(frame).toContain("switch the active model")
@@ -343,7 +343,7 @@ describe("SlashAutocomplete popup", () => {
 
   test("selected cursor moves to the second row", () => {
     const matches = COMMANDS.filter((c) => c.command.startsWith("/m"))
-    const inst = render(React.createElement(SlashAutocomplete, { matches, cursor: 1 }))
+    const inst = renderFixed(React.createElement(SlashAutocomplete, { matches, cursor: 1 }))
     const lines = (inst.lastFrame() ?? "").split("\n").filter((l) => l.includes("▸"))
     // Exactly one selected row, and it is the /mode row.
     expect(lines).toHaveLength(1)
@@ -367,7 +367,7 @@ describe("autocomplete submission safety", () => {
     const handleRef: React.MutableRefObject<ComposerHandle | undefined> = {
       current: undefined,
     }
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(Composer, {
         disabled: false,
         onSubmit: () => {},
@@ -402,7 +402,7 @@ describe("ModelPicker two-level render", () => {
 
   test("level-1 lists connected providers first with a connect row at the bottom", () => {
     const onProviderConnect = () => {}
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(ModelPicker, {
         models,
         current: "anthropic/claude-sonnet-5",
@@ -429,7 +429,7 @@ describe("ModelPicker two-level render", () => {
   })
 
   test("level-1 hides the connect row when no host hook is wired", () => {
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(ModelPicker, {
         models,
         current: "anthropic/claude-sonnet-5",
@@ -453,7 +453,7 @@ describe("ConnectDialog masked input", () => {
   ]
 
   test("provider chooser lists unconnected providers first", () => {
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(ConnectDialog, {
         providerCatalog: catalog,
         onConnect: () => {},
@@ -475,7 +475,7 @@ describe("ConnectDialog masked input", () => {
 
   test("mask: typed key never echoes; asterisks track length", async () => {
     const calls: { provider: string; key: string; url?: string }[] = []
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(ConnectDialog, {
         providerCatalog: catalog,
         onConnect: (provider, apiKey, baseURL?) => calls.push({ provider, key: apiKey, url: baseURL }),
@@ -511,7 +511,7 @@ describe("ConnectDialog masked input", () => {
 
   test("base URL pre-fills with the provider default", async () => {
     const calls: { provider: string; key: string; url?: string }[] = []
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(ConnectDialog, {
         providerCatalog: catalog,
         onConnect: (provider, apiKey, baseURL?) => calls.push({ provider, key: apiKey, url: baseURL }),
@@ -543,7 +543,7 @@ describe("ConnectDialog masked input", () => {
 
   test("Esc at the form returns to the provider chooser (not cancel)", async () => {
     const cancels: number[] = []
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(ConnectDialog, {
         providerCatalog: catalog,
         onConnect: () => {},

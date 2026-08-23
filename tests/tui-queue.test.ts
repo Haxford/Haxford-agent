@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { render } from "ink-testing-library"
 import React from "react"
 
 import { HaxfordApp } from "../src/tui/app.tsx"
@@ -7,6 +6,7 @@ import { createApprovalBridge } from "../src/tui/approval.ts"
 import { Composer, type ComposerHandle } from "../src/tui/components/Composer.tsx"
 import { queueDisplayLines, MAX_QUEUE_LINES_SHOWN } from "../src/tui/layout.ts"
 import { createTuiStore } from "../src/tui/store.ts"
+import { renderFixed } from "./helpers/ink.ts"
 
 /** Flush pending microtasks so useSyncExternalStore + input re-renders settle. */
 function flush(ms = 30): Promise<void> {
@@ -16,7 +16,7 @@ function flush(ms = 30): Promise<void> {
 function mount(overrides: { onPrompt?: (text: string) => void } = {}) {
   const store = createTuiStore([])
   const bridge = createApprovalBridge()
-  const inst = render(
+  const inst = renderFixed(
     React.createElement(HaxfordApp, {
       store,
       bridge,
@@ -217,7 +217,7 @@ describe("Composer up-arrow queue pop-back", () => {
     const popped: string[] = []
     let queue = ["queued one", "queued two"]
     const handleRef: React.MutableRefObject<ComposerHandle | undefined> = { current: undefined }
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(Composer, {
         disabled: false,
         onSubmit: () => {},
@@ -241,7 +241,7 @@ describe("Composer up-arrow queue pop-back", () => {
   test("up-arrow falls through to local submit history once the queue is empty", () => {
     const onChange: string[] = []
     const handleRef: React.MutableRefObject<ComposerHandle | undefined> = { current: undefined }
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(Composer, {
         disabled: false,
         onSubmit: () => {},
@@ -261,7 +261,7 @@ describe("Composer up-arrow queue pop-back", () => {
   test("up-arrow does not consult the queue when the composer already has text", async () => {
     let calls = 0
     const handleRef: React.MutableRefObject<ComposerHandle | undefined> = { current: undefined }
-    const inst = render(
+    const inst = renderFixed(
       React.createElement(Composer, {
         disabled: false,
         onSubmit: () => {},

@@ -116,3 +116,102 @@ Every suite covering the changed modules is green: **357 pass / 0 fail** across
 `todo-persistence`, `mcp`, `webfetch`.
 
 No new dependencies. No commits, no pushes.
+
+---
+
+# Round 2 — modules added after `0d4bc25`
+
+Scope: the MCP client/bridge/config, the TUI message queue and its `index.ts`
+seam, and the named-agent loader. Round 1's findings 17 and 18 were reported
+but not fixed because `src/mcp/` was being written at the time; that module has
+now landed, so it is audited properly here and both are closed.
+
+Regression tests are in `tests/security-audit-round2.test.ts`, plus a hostile
+stdio server fixture at `tests/fixtures/mcp-hostile-server.ts`. Same threat
+model as round 1: **the model is the attacker's proxy, and a cloned repository
+is attacker-controlled input.**
+
+## Ranked findings
+
+| # | Sev | File | Issue | Fix | Status |
+|---|---|---|---|---|---|
+| 19 | **Critical** | `src/agent/agents.ts` | Round 1 clamped a named agent's permission mode when spawned as a *subagent* (`task.ts`) but missed the **top-level** path. `pickMode` did `agent?.mode ?? cliMode`, so a project `.haxford/agents/helper.md` declaring `mode: auto` promoted the whole session from the default `build` to `auto` — where `createAskHandler` returns `allow` before `onAsk` is ever reached. Agent files ship with any repository you clone, so `haxford --agent helper` in a cloned repo meant unattended writes and shell with no prompt. Confirmed: `pickMode("build", false, agent)` returned `"auto"`. | `pickMode` now clamps through the same `clampMode` used for subagents. An agent may only narrow the posture; an explicit `--mode` still wins outright in both directions. | Fixed |
+| 20 | **High** | `src/mcp/index.ts`, `src/mcp/config.ts` | Repository-supplied code execution at startup. An `mcpServers` entry is `command` + `args` — an arbitrary program — and `loadMcpConfig` reads `<cwd>/.haxford/mcp.json`, which arrives with a cloned repo. With `autoStart` defaulting to true, `startMcp` spawned every one of them eagerly, so *running haxford in a directory* was enough to execute what that directory asked for, with no prompt and before the first turn. | The config layer each server came from is now recorded, and `startMcp` never eagerly spawns a `project`-sourced server: it is listed, warned about by name and command, and connects only on deliberate use (`ensureConnected`, a future `/mcp start`). Global servers — written by the user in their own home directory — still start eagerly. | Fixed |
+| 21 | **High** | `src/mcp/bridge.ts` | Server-controlled tool names went into provider-facing tool ids unchecked. A server advertising `"has space"`, `"../../etc/passwd"`, `""`, or a 300-character name produced ids that providers reject — and because the tool list is sent as a whole, **one bad name from one server fails every request for the entire session**, not just calls to that tool. Two tools could also claim one id and silently shadow each other. | `isBridgeableToolName` validates the name and the resulting id (`^[A-Za-z0-9_-]+$`, ≤64 chars, non-empty name); unusable and duplicate names are skipped and reported as warnings rather than mangled — silently rewriting one would decouple the id the user approves from the id the server answers to. `startMcp` additionally rejects an id already provided by another server. | Fixed |
+| 22 | **High** | `src/mcp/client.ts` | Unbounded stdout framing. The reader did `buffer += chunk` and only ever split on `\n`; MCP's stdio framing forbids embedded newlines, so a server that emits a stream without one — buggy, or no longer speaking MCP — grew that string until the process died. No cap, no resync. | The framing is extracted into `createLineFramer(onLine, maxBytes)` with an 8 MB ceiling: past it the partial line is dropped, the framer resynchronises on the next newline, and a `dropped()` counter makes it observable. Extracting it also means the bound is proved by unit test rather than by trying to exhaust memory. | Fixed |
+| 23 | **Medium** | `src/mcp/jsonSchema.ts` | (Round 1 finding 18, now closed.) `jsonSchemaToZod` recursed through `properties`/`items` with no depth limit against a server-supplied schema. Confirmed: a deeply nested `inputSchema` threw `RangeError: Maximum call stack size exceeded` — a server-triggered crash of the whole agent before a single tool ran. | Depth capped at 32; past it a node becomes `z.unknown()`, which is the permissive fallback the converter already uses everywhere else. | Fixed |
+| 24 | **Medium** | `src/index.ts` | A rejection could wedge the session permanently. `running = true` was set, then `appendMessage`/`updateSessionInfo` were awaited **outside** the `try`, so a disk error there escaped as an unhandled rejection and `running` stayed true for the life of the process. The composer keeps accepting prompts, every one is queued, and the flush in `finally` never runs — every subsequent message silently swallowed, indistinguishable from a hung model. The `AbortController` was also created after those awaits, so `esc` did nothing during them. | The whole body is inside the `try`, so the `finally` that clears `running` and flushes the queue always runs; the controller is created first so `esc` works throughout. | Fixed (see "Left undone" for why this one has no automated test) |
+| 25 | **Medium** | `src/tui/store.ts` | The prompt queue was unbounded. A run that never ends — a wedged provider, a model looping on tool calls — leaves the composer live with every submission accumulating, each entry a whole prompt. | `enqueue` is capped at `MAX_QUEUED` (100) and returns `false` when it refuses, so the host tells the user rather than appearing to accept a message it dropped. | Fixed |
+| 26 | **Medium** | `src/mcp/bridge.ts` | MCP tool output went into the model's context and the session JSONL unredacted — the same gap round 1 closed for `read` and `grep`. An MCP server that reads files or env (a filesystem or shell server) could put credentials straight into the transcript. | Output is run through `redactSecrets` before truncation, matching `bash`. | Fixed |
+| 27 | **Low** | `src/agent/agents.ts` | Symlinked agent files were skipped silently. The skip is correct and must stay — an agent body becomes system-prompt text, so following a symlink would let a cloned repo point `.haxford/agents/x.md` at `~/.ssh/id_rsa` and have it read out to the model — but silence meant a user who symlinked one deliberately saw the *global* agent of that name run instead, with no explanation. | Still not followed; now warns, naming the file and the reason. **This answers the scope question directly: precedence cannot be reversed by a symlink. `readdir(withFileTypes)` reports a symlink as `isSymbolicLink()`, not `isFile()`, so a symlinked project agent is dropped and the global one stands — the fail-safe direction, since global is user-authored and project ships with the repo.** | Fixed |
+| 28 | **Low** | `src/agent/agents.ts` | `getAgents` read every agent body in full just to build the picker list, with no size ceiling — and the body goes into the system prompt. | 256 KB ceiling per file, skipped with a warning past it. | Fixed |
+| 29 | **Low** | `src/mcp/connection.ts` | No reconnect backoff. `ensureConnected` shares an in-flight attempt (so concurrent callers do not storm), but a server that fails to connect never sets `client`, so *every* subsequent call respawns it and pays the 10 s handshake timeout again. Bounded by model turns rather than unbounded, so it is slow rather than dangerous. | Recommend a short cooldown after a failed connect. **Reported, not fixed** — see below. | Reported |
+| 30 | **Low** | `src/mcp/client.ts` | `handleInbound` coerces a reply id with `Number(rawID)`, so `"1"`, `1.0` and `true` all correlate to pending request 1. A server can therefore answer a request it was not asked. It supplies every reply anyway, so this crosses no boundary. | None. Recorded so it is not mistaken for an oversight. | Informational |
+
+**Round 2 counts:** 1 Critical, 3 High, 4 Medium, 3 Low — 11 total. 9 fixed, 1
+reported, 1 informational.
+
+## Reviewed and found sound
+
+- **Credential stripping reaches MCP servers.** `spawnServer` uses
+  `filteredEnv()`, so haxford's provider keys are absent from the child
+  environment while user tokens pass through. Now pinned by a test that runs at
+  the *client* level rather than through `bridgeMcpTools` — the bridge redacts
+  secrets in output, which would have masked a real leak and made the test pass
+  for the wrong reason.
+- **No permission-gate bypass via tool-id spoofing.** Every bridged id is
+  `mcp__<server>__<tool>` and now provably matches `^[A-Za-z0-9_-]+$`, so it can
+  never equal a built-in id; the engine has no wildcard on the tool *key*, only
+  on the subject; and cross-server id collisions are now rejected. (An
+  *extension* could still register an id shaped like `mcp__x__y` — extensions are
+  arbitrary in-process code by design, documented in round 1's finding 14, so
+  this is not a boundary.)
+- **`z.object` strips unknown keys**, so an `additionalProperties` passthrough
+  does not smuggle extra arguments; the permissive `z.record` fallback only
+  applies to schemas with no usable `properties`, and those arguments go to the
+  server that published the schema.
+- **Flush re-entrancy is sound.** `onPrompt` re-enters from its own `finally`,
+  but `running` is set synchronously before the async body, so the re-entry runs
+  exactly one queued prompt and each nesting level returns immediately — no
+  concurrent runs, no stack growth.
+- **Tool allowlists filter every entry point.** `filterToolsByAllowlist` runs on
+  the list handed to the loop, and a subagent inherits the parent's already
+  filtered list minus `task`, so a named agent's allowlist survives nesting.
+  There is no "inside" path — bash subshells are bash (filtered as a unit), and
+  MCP tools are ordinary `Tool` entries filtered by id like any other.
+- **Prompt injection through agent frontmatter** is user-controlled by design,
+  as the brief states. Worth recording that the body is the only free-text field
+  that reaches the prompt; `mode`, `model` and `tools` are all validated against
+  fixed vocabularies, and `mode` is now clamped (finding 19).
+
+## Left undone, and why
+
+- **Finding 24 has no automated test.** `onPrompt` is a closure inside
+  `index.ts`'s interactive path, and `index.ts` calls `main()` at module scope —
+  importing it from a test would launch the CLI. Testing it needs either an
+  `import.meta.main` guard on the entrypoint or extracting the turn-runner into
+  its own module. Both change coordinator-owned startup semantics, which is not
+  a call to make inside a review round, so the fix is structural (everything
+  inside `try`/`finally`) and verified by inspection. Recommend the
+  `import.meta.main` guard as a follow-up — it is one line and makes the whole
+  host testable.
+- **Finding 29 (reconnect cooldown) not implemented.** It is a behavioural
+  change to connection lifecycle rather than a security fix, and this round
+  already reshaped `src/mcp/` substantially; stacking more behaviour change on a
+  module its author may still be iterating on is the wrong trade.
+- **Two `tests/mcp.test.ts` cases were updated, not weakened.** They asserted
+  that a *project*-defined server auto-starts and that a parsed server has no
+  `source` field — both encode the behaviour finding 20 removes. The eager-start
+  case now exercises the global layer (which still starts eagerly, so the
+  original intent is still covered) and a new case asserts the project server is
+  listed, warned about, not spawned, and still connectable on demand.
+
+## Round 2 test gate
+
+`bun run typecheck` — clean.
+
+Full suite: **863 pass / 0 fail** across 37 files — green, including the two
+`tui-regions` pinning tests that were failing at the start of this round and
+were fixed by another agent's concurrent work.
+
+No new dependencies. No commits, no pushes.

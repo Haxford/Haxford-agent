@@ -267,23 +267,39 @@ async function runTui(
     // below) re-enters this exact path once the loop goes idle, one prompt
     // at a time — never concurrently, since `running` still gates it.
     if (running) {
-      store.enqueue(text)
+      if (!store.enqueue(text)) {
+        store.dispatch({
+          type: "notice",
+          message:
+            "queue is full — that prompt was not accepted. Wait for the current run, or press esc to interrupt it.",
+        })
+      }
       return
     }
     running = true
     void (async () => {
-      const user = userMessage(session.id, text)
-      await appendMessage(cwd, session.id, user)
-      store.dispatch({ type: "message.updated", message: user })
-      history.push(user)
-
-      if (session.title === "Untitled session") {
-        session = { ...session, title: text.slice(0, 60) }
-        await updateSessionInfo(cwd, session)
-      }
-
+      // EVERYTHING between `running = true` and the `finally` has to be inside
+      // this try. Persisting the user turn touches the disk, so it can reject
+      // — a full disk, a read-only data dir — and a rejection out here would
+      // leave `running` true for the life of the process: the composer keeps
+      // accepting prompts, every one of them is queued, and none of them ever
+      // flushes. A stuck flag is indistinguishable from a hung model, so the
+      // user would have no way to tell what went wrong.
+      //
+      // The controller is created first for the same reason: it is what `esc`
+      // aborts, and the awaits below are long enough to press it.
+      controller = new AbortController()
       try {
-        controller = new AbortController()
+        const user = userMessage(session.id, text)
+        await appendMessage(cwd, session.id, user)
+        store.dispatch({ type: "message.updated", message: user })
+        history.push(user)
+
+        if (session.title === "Untitled session") {
+          session = { ...session, title: text.slice(0, 60) }
+          await updateSessionInfo(cwd, session)
+        }
+
         for await (const event of runAgentLoop({
           sessionID: session.id,
           agent: namedAgent?.name ?? "build",

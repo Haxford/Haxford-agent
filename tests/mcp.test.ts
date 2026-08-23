@@ -65,7 +65,11 @@ describe("loadMcpConfig", () => {
     const { config, warnings } = await loadMcpConfig(dir)
     expect(warnings).toEqual([])
     expect(config.autoStart).toBe(false)
-    expect(config.mcpServers["fake"]).toEqual({ command: "bun", args: ["server.ts"], env: { X: "1" } })
+    // Tagged with its layer — startMcp uses this to refuse to auto-spawn a
+    // project-defined server (see tests/mcp.test.ts's startMcp describe).
+    expect(config.mcpServers["fake"]).toEqual({
+      command: "bun", args: ["server.ts"], env: { X: "1" }, source: "project",
+    })
   })
 
   test("bad entries become warnings, not throws, and are dropped", async () => {
@@ -341,21 +345,52 @@ describe("bridgeMcpTools", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("startMcp", () => {
-  test("eagerly connects and bridges tools when autoStart is true (default)", async () => {
+  test("eagerly connects and bridges tools from a GLOBAL server when autoStart is true (default)", async () => {
+    // The global layer is `$HOME/.haxford/mcp.json` — written by the user, so
+    // it is the layer that still starts eagerly.
+    const home = await tmpdir()
+    const cwd = await tmpdir()
+    await Bun.write(
+      join(home, ".haxford", "mcp.json"),
+      JSON.stringify({ mcpServers: { fake: FAKE_SERVER } }),
+    )
+    const realHome = Bun.env.HOME
+    Bun.env.HOME = home
+    try {
+      const result = await startMcp(cwd)
+      expect(result.warnings).toEqual([])
+      expect(result.connections).toHaveLength(1)
+      expect(result.connections[0]?.status()).toBe("connected")
+      expect(result.tools.map((t) => t.id).sort()).toEqual([
+        "mcp__fake__boom",
+        "mcp__fake__crash",
+        "mcp__fake__echo",
+      ])
+      await Promise.all(result.connections.map((c) => c.close()))
+    } finally {
+      if (realHome === undefined) delete Bun.env.HOME
+      else Bun.env.HOME = realHome
+    }
+  })
+
+  test("a PROJECT-defined server is listed but never spawned at startup", async () => {
+    // `<cwd>/.haxford/mcp.json` ships with any repository you clone, and a
+    // server entry is an arbitrary command. Running haxford in a directory
+    // must not be enough to execute what that directory asked for.
     const dir = await tmpdir()
     await Bun.write(
       join(dir, ".haxford", "mcp.json"),
       JSON.stringify({ mcpServers: { fake: FAKE_SERVER } }),
     )
     const result = await startMcp(dir)
-    expect(result.warnings).toEqual([])
+    expect(result.tools).toEqual([])
     expect(result.connections).toHaveLength(1)
-    expect(result.connections[0]?.status()).toBe("connected")
-    expect(result.tools.map((t) => t.id).sort()).toEqual([
-      "mcp__fake__boom",
-      "mcp__fake__crash",
-      "mcp__fake__echo",
-    ])
+    expect(result.connections[0]?.status()).toBe("never-connected")
+    expect(result.warnings.join("\n")).toContain("not started automatically")
+
+    // Still usable on a deliberate, explicit start — the /mcp seam.
+    const listed = await result.connections[0]!.listTools()
+    expect(listed.ok).toBe(true)
     await Promise.all(result.connections.map((c) => c.close()))
   })
 

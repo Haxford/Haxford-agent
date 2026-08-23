@@ -16,7 +16,7 @@ import path from "node:path"
 
 import { haxfordHome } from "../extend/paths.ts"
 import { parseFrontmatterFields } from "../extend/skills.ts"
-import type { Mode } from "../permission/engine.ts"
+import { clampMode, type Mode } from "../permission/engine.ts"
 import type { Tool } from "../types/tool.ts"
 
 /** The agent name that means "no named agent": stock behavior, unchanged. */
@@ -24,6 +24,9 @@ export const DEFAULT_AGENT_NAME = "build"
 
 /** The file an agent directory entry must be. */
 const AGENT_SUFFIX = ".md"
+
+/** Ceiling on one agent file. Its body is prompt text, not a data store. */
+const MAX_AGENT_BYTES = 256 * 1024
 
 /** Valid frontmatter modes, in increasing order of permissiveness. */
 const VALID_MODES: readonly Mode[] = ["plan", "build", "auto"]
@@ -103,7 +106,18 @@ export async function loadAgent(
 
   let text: string
   try {
-    text = await Bun.file(file).text()
+    const handle = Bun.file(file)
+    // `getAgents` reads every agent body just to build the picker list, so an
+    // oversized file is paid for on every scan — and the body goes into the
+    // system prompt, where megabytes are a bill, not a feature.
+    if (handle.size > MAX_AGENT_BYTES) {
+      return {
+        warnings: [
+          `agent ${JSON.stringify(name)}: ${handle.size} bytes, over the ${MAX_AGENT_BYTES}-byte limit (skipped)`,
+        ],
+      }
+    }
+    text = await handle.text()
   } catch (error) {
     return { warnings: [`agent ${JSON.stringify(name)}: could not read (${errorText(error)})`] }
   }
@@ -190,8 +204,24 @@ async function scanAgentDir(
 
   const found: NamedAgent[] = []
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(AGENT_SUFFIX)) continue
+    if (!entry.name.endsWith(AGENT_SUFFIX)) continue
     if (entry.name.startsWith(".")) continue
+
+    // Symlinks are deliberately NOT followed, and saying so out loud matters
+    // twice over. An agent body becomes system-prompt text, so following one
+    // would let a cloned repo point `.haxford/agents/x.md` at `~/.ssh/id_rsa`
+    // and have the contents read out to the model. And because a skipped
+    // project entry silently leaves the global agent of the same name in
+    // force, a user who symlinked one deliberately would otherwise see the
+    // wrong agent run with no explanation.
+    if (entry.isSymbolicLink()) {
+      warnings.push(
+        `skipped ${path.join(dir, entry.name)}: symlinked agent files are not followed ` +
+          `(an agent body becomes prompt text, so it must be a real file in the directory)`,
+      )
+      continue
+    }
+    if (!entry.isFile()) continue
 
     const { agent, warnings: fileWarnings } = await loadAgent(
       path.join(dir, entry.name),
@@ -261,10 +291,21 @@ export async function resolveAgent(
 /**
  * The effective permission mode: an explicit `--mode` flag wins, then the
  * named agent's posture, then the CLI default.
+ *
+ * An agent may only make the posture STRICTER. Declaring `mode: plan` for a
+ * read-only reviewer is the feature; declaring `mode: auto` to escape the
+ * default `build` is not, because `.haxford/agents/*.md` is read from the
+ * project directory and therefore ships with any repository you clone. Auto
+ * mode allows everything a rule does not deny, so an unclamped agent file
+ * would turn `haxford --agent helper` in a cloned repo into unattended writes
+ * and shell access the user never chose.
+ *
+ * An explicit `--mode` still wins outright in both directions: that is the
+ * user typing, not a file in the repo.
  */
 export function pickMode(cliMode: Mode, cliExplicit: boolean, agent?: NamedAgent): Mode {
   if (cliExplicit) return cliMode
-  return agent?.mode ?? cliMode
+  return clampMode(agent?.mode, cliMode)
 }
 
 /**

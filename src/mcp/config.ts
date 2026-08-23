@@ -5,6 +5,13 @@ export interface McpServerConfig {
   command: string
   args?: string[]
   env?: Record<string, string>
+  /**
+   * Which layer defined this server.
+   *
+   * `project` means it came from `<cwd>/.haxford/mcp.json`, which arrives
+   * with any repository you clone — see `autoStart` handling in `startMcp`.
+   */
+  source?: "global" | "project"
 }
 
 export interface McpConfig {
@@ -75,7 +82,11 @@ interface Layer {
   autoStart?: boolean
 }
 
-async function readLayer(path: string, warnings: string[]): Promise<Layer> {
+async function readLayer(
+  path: string,
+  source: "global" | "project",
+  warnings: string[],
+): Promise<Layer> {
   const file = Bun.file(path)
   if (!(await file.exists())) return { servers: {} }
 
@@ -101,7 +112,7 @@ async function readLayer(path: string, warnings: string[]): Promise<Layer> {
     } else {
       for (const [name, entry] of Object.entries(rawServers)) {
         const server = parseServer(name, entry, path, warnings)
-        if (server) servers[name] = server
+        if (server) servers[name] = { ...server, source }
       }
     }
   }
@@ -133,8 +144,8 @@ export async function loadMcpConfig(cwd: string): Promise<LoadedMcpConfig> {
   const globalPath = join(Bun.env.HOME ?? "~", ".haxford", CONFIG_FILENAME)
   const projectPath = join(cwd, ".haxford", CONFIG_FILENAME)
 
-  const global = await readLayer(globalPath, warnings)
-  const project = await readLayer(projectPath, warnings)
+  const global = await readLayer(globalPath, "global", warnings)
+  const project = await readLayer(projectPath, "project", warnings)
 
   const mcpServers = { ...global.servers, ...project.servers }
   const autoStart = project.autoStart ?? global.autoStart ?? true

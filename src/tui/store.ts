@@ -3,6 +3,15 @@ import type { Message } from "../types/message.ts"
 import { fromMessages, initialTuiState, reduce, type TuiState } from "./state.ts"
 
 /**
+ * Most prompts that may wait behind a running turn.
+ *
+ * High enough that no one types into it by accident, low enough that a run
+ * which never finishes cannot turn the queue into an unbounded buffer of
+ * user text.
+ */
+export const MAX_QUEUED = 100
+
+/**
  * External store wrapping TuiState. Suitable for React's `useSyncExternalStore`:
  * `getState()` returns a stable reference until a dispatch/reset produces a
  * new state, so React does not need to re-render on unrelated notifications.
@@ -34,8 +43,12 @@ export interface TuiStore {
   /**
    * Push a prompt submitted while a run is already in flight onto the back of
    * the queue. FIFO: the host flushes from the front once idle.
+   *
+   * Returns false when the queue is already at `MAX_QUEUED` and the prompt was
+   * refused, so the caller can tell the user rather than appearing to accept
+   * a message it silently dropped.
    */
-  enqueue(text: string): void
+  enqueue(text: string): boolean
   /** Pop and return the oldest queued prompt, or undefined if the queue is empty. */
   dequeue(): string | undefined
   /**
@@ -122,9 +135,16 @@ export function createTuiStore(initial: Message[]): TuiStore {
       return expanded
     },
 
-    enqueue(text: string): void {
+    enqueue(text: string): boolean {
+      // Bounded on purpose. A run that never ends — a wedged provider, a
+      // model looping on tool calls — leaves the composer live and every
+      // submission accumulating here, and each entry is a whole prompt.
+      // Refusing at the cap and saying so beats growing without limit and
+      // then replaying a hundred stale prompts when the run finally lands.
+      if (state.queue.length >= MAX_QUEUED) return false
       state = { ...state, queue: [...state.queue, text] }
       notify()
+      return true
     },
 
     dequeue(): string | undefined {

@@ -72,9 +72,11 @@ export function HelpPanel(): React.ReactElement {
   return (
     <Box flexDirection="column" paddingLeft={2}>
       <Table title="commands" rows={COMMANDS} />
-      <Box marginTop={1}>
-        <Table title="keys" rows={KEYBINDINGS} />
-      </Box>
+      {/* No blank row between tables: each bold, coloured title is already a
+          clear section break, and an overlay's own footprint should stay as
+          small as the content actually needs — see app.tsx's chrome-stack
+          comment on why an overlay's height matters to the frame around it. */}
+      <Table title="keys" rows={KEYBINDINGS} />
     </Box>
   )
 }

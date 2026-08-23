@@ -24,6 +24,12 @@ export const MCP_PROTOCOL_VERSION = "2024-11-05"
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 /** Hard cap on tools/list pagination so a misbehaving server cannot loop forever. */
 const MAX_LIST_PAGES = 100
+/**
+ * Ceiling on one newline-delimited message. The spec forbids embedded
+ * newlines, so a "line" that never ends is a server that has stopped speaking
+ * MCP — not a large legitimate message we should keep buffering.
+ */
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 
 export interface McpToolSchema {
   name: string
@@ -69,6 +75,63 @@ type JsonRpcReply = JsonRpcSuccess | JsonRpcFailure
 
 function isFailure(reply: JsonRpcReply): reply is JsonRpcFailure {
   return "error" in reply && reply.error !== undefined
+}
+
+export interface LineFramer {
+  /** Feed a decoded chunk; complete lines are handed to the sink in order. */
+  push(chunk: string): void
+  /** Bytes currently held for the line still being assembled. */
+  pending(): number
+  /** How many oversized lines have been discarded. */
+  dropped(): number
+}
+
+/**
+ * Split a stream into newline-delimited lines, bounded.
+ *
+ * Extracted from the read loop so the bound is testable without having to
+ * exhaust memory to prove it. The MCP stdio framing forbids embedded
+ * newlines, so a "line" that keeps growing is a server that has stopped
+ * speaking MCP — a naive `buffer += chunk` grows until the process dies.
+ * Past the cap the partial line is dropped and the framer resynchronises on
+ * the next newline, which costs one message and bounds the memory.
+ */
+export function createLineFramer(
+  onLine: (line: string) => void,
+  maxBytes: number = MAX_MESSAGE_BYTES,
+): LineFramer {
+  let buffer = ""
+  let skipping = false
+  let dropped = 0
+
+  return {
+    push(chunk: string): void {
+      buffer += chunk
+      for (;;) {
+        const nl = buffer.indexOf("\n")
+        if (nl === -1) break
+        const line = buffer.slice(0, nl).trim()
+        buffer = buffer.slice(nl + 1)
+        if (skipping) {
+          // This newline closes the oversized line; resume normally.
+          skipping = false
+        } else if (line.length > 0) {
+          onLine(line)
+        }
+      }
+      if (buffer.length > maxBytes) {
+        if (!skipping) {
+          skipping = true
+          dropped++
+        }
+        buffer = ""
+      } else if (skipping) {
+        buffer = ""
+      }
+    },
+    pending: () => buffer.length,
+    dropped: () => dropped,
+  }
 }
 
 function spawnServer(config: McpServerConfig, cwd: string) {
@@ -172,26 +235,19 @@ export async function connectMcpServer(
   void (async () => {
     const reader = proc.stdout.getReader()
     const decoder = new TextDecoder()
-    let buffer = ""
+    const framer = createLineFramer((line) => {
+      try {
+        handleInbound(JSON.parse(line))
+      } catch {
+        // Not a valid MCP message — ignore rather than tear down the
+        // connection over one malformed line.
+      }
+    })
     try {
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        let nl = buffer.indexOf("\n")
-        while (nl !== -1) {
-          const line = buffer.slice(0, nl).trim()
-          buffer = buffer.slice(nl + 1)
-          if (line.length > 0) {
-            try {
-              handleInbound(JSON.parse(line))
-            } catch {
-              // Not a valid MCP message — ignore rather than tear down the
-              // connection over one malformed line.
-            }
-          }
-          nl = buffer.indexOf("\n")
-        }
+        framer.push(decoder.decode(value, { stream: true }))
       }
     } catch {
       // Stream error — falls through to the disconnect below.

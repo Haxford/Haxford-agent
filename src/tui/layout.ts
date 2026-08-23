@@ -120,7 +120,10 @@ export interface PinInput {
 }
 
 /**
- * The most blank filler rows the frame will draw above the live region.
+ * The most blank filler rows the frame will draw above the live region,
+ * counting EVERY blank row between the header and the composer's rule — the
+ * dynamic padding box below plus the chrome stack's own fixed lead-in gap
+ * (`CHROME_GAP_LINES`), not just the padding box in isolation.
  *
  * Bottom-pinning used to spend every free row pushing the composer onto the
  * terminal's last rows, which on a fresh session meant a screenful of dead
@@ -133,17 +136,29 @@ export interface PinInput {
 export const MAX_FILLER_LINES = 2
 
 /**
- * Blank lines to insert above the live region, clamped to `MAX_FILLER_LINES`.
+ * The composer chrome's own leading margin (the `marginTop` on the box
+ * holding the hint/queue/Composer/StatusBar group), present whenever no
+ * overlay is stealing that job — see app.tsx. It is a real, always-drawn
+ * blank row, so `bottomPadding` below reserves room for it out of the same
+ * `MAX_FILLER_LINES` budget instead of letting it stack on top unaccounted
+ * for, which is what silently turned a "≤2 blank rows" budget into 3.
+ */
+export const CHROME_GAP_LINES = 1
+
+/**
+ * Blank lines to insert in the dynamic padding box above the live region, so
+ * that box plus the chrome stack's fixed `CHROME_GAP_LINES` together never
+ * exceed `MAX_FILLER_LINES`.
  *
  * The result decays to zero on its own: every line the transcript gains is a
  * line of padding it takes, and once the content fills the viewport the
  * terminal's own scrolling takes over. Clamped at both ends — zero when the
- * frame overflows (never negative), `MAX_FILLER_LINES` however tall the
- * terminal is.
+ * frame overflows (never negative), `MAX_FILLER_LINES - CHROME_GAP_LINES`
+ * however tall the terminal is.
  */
 export function bottomPadding(p: PinInput): number {
-  const used = p.banner + p.input + p.footer + p.transcript
+  const used = p.banner + p.input + p.footer + p.transcript + CHROME_GAP_LINES
   const free = p.height - used
   if (free <= 0) return 0
-  return Math.min(free, MAX_FILLER_LINES)
+  return Math.min(free, MAX_FILLER_LINES - CHROME_GAP_LINES)
 }

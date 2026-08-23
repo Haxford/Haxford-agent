@@ -20,7 +20,19 @@ function stringList(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === "string")
 }
 
-function objectSchema(schema: Record<string, unknown>): ZodType {
+/**
+ * How deep a server's schema may nest before we stop descending.
+ *
+ * The schema is supplied by the MCP server, and this conversion is
+ * recursive: `{"type":"array","items":{"type":"array","items":…}}` nested
+ * deep enough overflows the stack and takes the whole process down before a
+ * single tool has been called. Real schemas are a handful of levels; past
+ * this, the node becomes `z.unknown()` — permissive, which is what the
+ * fallback already is everywhere else here, and finite.
+ */
+const MAX_SCHEMA_DEPTH = 32
+
+function objectSchema(schema: Record<string, unknown>, depth: number): ZodType {
   const properties = schema["properties"]
   if (!isRecord(properties)) {
     // An object schema with no usable `properties` — accept any shape.
@@ -30,15 +42,16 @@ function objectSchema(schema: Record<string, unknown>): ZodType {
   const required = new Set(stringList(schema["required"]))
   const shape: Record<string, ZodType> = {}
   for (const [key, value] of Object.entries(properties)) {
-    const field = jsonSchemaToZod(value)
+    const field = jsonSchemaToZod(value, depth + 1)
     shape[key] = required.has(key) ? field : field.optional()
   }
   return z.object(shape)
 }
 
 /** Convert one JSON Schema node to a zod schema. Unrecognised shapes fall back to z.unknown(). */
-export function jsonSchemaToZod(schema: unknown): ZodType {
+export function jsonSchemaToZod(schema: unknown, depth = 0): ZodType {
   if (!isRecord(schema)) return z.unknown()
+  if (depth >= MAX_SCHEMA_DEPTH) return z.unknown()
 
   switch (schema["type"]) {
     case "string":
@@ -53,14 +66,16 @@ export function jsonSchemaToZod(schema: unknown): ZodType {
       return z.null()
     case "array": {
       const items = schema["items"]
-      return z.array(items !== undefined ? jsonSchemaToZod(items) : z.unknown())
+      return z.array(
+        items !== undefined ? jsonSchemaToZod(items, depth + 1) : z.unknown(),
+      )
     }
     case "object":
-      return objectSchema(schema)
+      return objectSchema(schema, depth)
     default:
       // No (or an unrecognised) `type` keyword: fall back to whatever shape
       // is actually present rather than refusing the field outright.
-      return isRecord(schema["properties"]) ? objectSchema(schema) : z.unknown()
+      return isRecord(schema["properties"]) ? objectSchema(schema, depth) : z.unknown()
   }
 }
 
@@ -74,5 +89,5 @@ export function inputSchemaToZod(inputSchema: unknown): ZodType<Record<string, u
   if (!isRecord(inputSchema) || !isRecord(inputSchema["properties"])) {
     return z.record(z.string(), z.unknown())
   }
-  return objectSchema(inputSchema) as ZodType<Record<string, unknown>>
+  return objectSchema(inputSchema, 0) as ZodType<Record<string, unknown>>
 }

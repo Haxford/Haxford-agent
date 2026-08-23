@@ -4,6 +4,7 @@ import type { Message } from "../src/types/message.ts"
 import { HEADER_LINES, tildeCwd } from "../src/tui/components/Banner.tsx"
 import { DEFAULT_SIZE, readSize } from "../src/tui/hooks.ts"
 import {
+  CHROME_GAP_LINES,
   FOOTER_LINES,
   INPUT_RULE_LINES,
   MAX_FILLER_LINES,
@@ -29,38 +30,58 @@ const CHROME = {
   footer: FOOTER_LINES,
 } as const
 
-/** Rows the chrome always occupies, whatever the transcript does. */
-const USED = CHROME.banner + CHROME.input + CHROME.footer
+/**
+ * Rows the chrome always occupies, whatever the transcript does — including
+ * `CHROME_GAP_LINES`, the composer chrome's own fixed lead-in margin (see
+ * app.tsx), which `bottomPadding` now reserves room for out of the same
+ * `MAX_FILLER_LINES` budget it clamps its own return value against. Before
+ * this accounting existed, a "≤2 blank rows" budget silently became 3 in the
+ * rendered frame — `tests/tui-regions.test.ts` covers that end to end; these
+ * tests cover the arithmetic in isolation.
+ */
+const USED = CHROME.banner + CHROME.input + CHROME.footer + CHROME_GAP_LINES
+
+/** What `bottomPadding` itself clamps to: the total budget minus the fixed gap. */
+const PADDING_CAP = MAX_FILLER_LINES - CHROME_GAP_LINES
 
 function pad(height: number, transcript: number): number {
   return bottomPadding({ ...CHROME, height, transcript })
 }
 
 describe("bottomPadding", () => {
-  test("filler is capped at MAX_FILLER_LINES however tall the terminal", () => {
+  test("filler is capped at MAX_FILLER_LINES - CHROME_GAP_LINES however tall the terminal", () => {
     // The old math spent every free row pushing the composer to the bottom,
     // which read as a screenful of dead space between header and chrome.
     for (const height of [40, 80, 200]) {
-      expect(pad(height, 0)).toBe(MAX_FILLER_LINES)
+      expect(pad(height, 0)).toBe(PADDING_CAP)
+    }
+  })
+
+  test("padding plus the fixed chrome gap never exceeds MAX_FILLER_LINES", () => {
+    // The actual guarantee this budget exists for: total blank rows drawn
+    // above the composer — this box PLUS the always-on chrome gap — stays
+    // within MAX_FILLER_LINES, not just this box in isolation.
+    for (const height of [10, 20, 24, 40, 80, 200]) {
+      expect(pad(height, 0) + CHROME_GAP_LINES).toBeLessThanOrEqual(MAX_FILLER_LINES)
     }
   })
 
   test("small ptys stay tight on first paint (heights 10 / 20 / 40)", () => {
     for (const height of [10, 20, 40]) {
       const p = pad(height, 0)
-      expect(p).toBeLessThanOrEqual(MAX_FILLER_LINES)
+      expect(p).toBeLessThanOrEqual(PADDING_CAP)
       expect(p).toBeGreaterThanOrEqual(0)
     }
-    expect(pad(10, 0)).toBe(2)
-    expect(pad(20, 0)).toBe(2)
-    expect(pad(40, 0)).toBe(2)
+    expect(pad(10, 0)).toBe(PADDING_CAP)
+    expect(pad(20, 0)).toBe(PADDING_CAP)
+    expect(pad(40, 0)).toBe(PADDING_CAP)
   })
 
   test("transcript growth takes the filler back once past the cap", () => {
-    // height 10: free = 10 - USED - transcript, uncapped below 2.
-    expect(pad(10, 1)).toBe(2)
-    expect(pad(10, 2)).toBe(1)
-    expect(pad(10, 3)).toBe(0)
+    // height 10: free = 10 - USED - transcript, uncapped below PADDING_CAP(1).
+    expect(pad(10, 0)).toBe(1) // PADDING_CAP at this height/CHROME
+    expect(pad(10, 1)).toBe(1) // free is still 1 — the cap, not free, bites first
+    expect(pad(10, 2)).toBe(0) // free drops to 0
     expect(pad(10, 500)).toBe(0)
   })
 
@@ -76,7 +97,7 @@ describe("bottomPadding", () => {
   test("holds across a range of terminal heights", () => {
     for (const height of [10, 24, 30, 40, 50, 60, 80, 120]) {
       const p = pad(height, 3)
-      expect(p).toBe(Math.max(0, Math.min(height - USED - 3, MAX_FILLER_LINES)))
+      expect(p).toBe(Math.max(0, Math.min(height - USED - 3, PADDING_CAP)))
       // The invariant that matters: what is drawn plus what is padded never
       // overflows the viewport.
       expect(p + USED + 3).toBeLessThanOrEqual(Math.max(height, USED + 3))
@@ -86,9 +107,10 @@ describe("bottomPadding", () => {
   test("a taller input eats padding one line at a time", () => {
     const one = bottomPadding({ ...CHROME, height: 9, transcript: 0 })
     const three = bottomPadding({ ...CHROME, input: INPUT_RULE_LINES + 3, height: 9, transcript: 0 })
-    // USED+2 rows tall: the one-line input leaves exactly two free rows, and
-    // each extra input line takes one of them back before the clamp bites.
-    expect(one).toBe(2)
+    // At height 9, USED(=CHROME+gap) leaves exactly PADDING_CAP free rows for
+    // the one-line input, and each extra input line takes one back before
+    // the clamp — and then the floor of zero — bite.
+    expect(one).toBe(PADDING_CAP)
     expect(three).toBe(0)
   })
 })
