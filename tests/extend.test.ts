@@ -661,3 +661,65 @@ describe("reloadExtensions", () => {
     expect(starts).toBe(2)
   })
 })
+
+/* Skills — cross-harness secondary root                                       */
+/* -------------------------------------------------------------------------- */
+
+describe("cross-harness skill scan (~/.agents/skills)", () => {
+  let oldAgents: string | undefined
+  let agentsHome: string
+
+  beforeEach(async () => {
+    agentsHome = path.join(TMP, `haxford-agents-${crypto.randomUUID()}`)
+    oldAgents = process.env["AGENT_SKILLS_HOME"]
+    process.env["AGENT_SKILLS_HOME"] = agentsHome
+    await Bun.write(path.join(agentsHome, ".keep"), "")
+  })
+
+  afterEach(async () => {
+    if (oldAgents === undefined) delete process.env["AGENT_SKILLS_HOME"]
+    else process.env["AGENT_SKILLS_HOME"] = oldAgents
+    await rm(agentsHome, { recursive: true, force: true })
+  })
+
+  /** Write a SKILL.md into the ~/.agents tree. */
+  async function agentSkill(name: string, body: string): Promise<void> {
+    await Bun.write(path.join(agentsHome, name, "SKILL.md"), body)
+    await Bun.write(path.join(agentsHome, name, ".keep"), "")
+  }
+
+  test("secondary-root skills are indexed alongside primary ones", async () => {
+    await skill("release", "---\ndescription: primary\n---\n")
+    await agentSkill("doom", "---\ndescription: from the ecosystem\n---\n")
+
+    const { skills, warnings } = await scanSkills()
+    expect(warnings).toEqual([])
+    expect(skills.map((s) => s.name)).toEqual(["doom", "release"])
+    expect(skills[0]?.description).toBe("from the ecosystem")
+  })
+
+  test("a same-name primary skill shadows the ecosystem copy, with a warning", async () => {
+    await skill("release", "---\ndescription: my rewrite\n---\n")
+    await agentSkill("release", "---\ndescription: upstream version\n---\n")
+
+    const { skills, warnings } = await scanSkills()
+    expect(skills).toHaveLength(1)
+    expect(skills[0]?.description).toBe("my rewrite")
+    expect(skills[0]?.path).toContain(path.join(home, "skills"))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain("shadowed")
+  })
+
+  test("an explicit dir argument skips the secondary scan (test isolation)", async () => {
+    await agentSkill("doom", "---\ndescription: ecosystem\n---\n")
+    const { skills, warnings } = await scanSkills(path.join(home, "skills"))
+    expect(skills).toEqual([])
+    expect(warnings).toEqual([])
+  })
+
+  test("a missing ~/.agents/skills is silent, like a missing primary", async () => {
+    const { skills, warnings } = await scanSkills()
+    expect(skills).toEqual([])
+    expect(warnings).toEqual([])
+  })
+})

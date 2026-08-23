@@ -20,6 +20,22 @@ export function haxfordHome(): string {
   return path.join(process.env["HOME"] ?? "~", ".haxford")
 }
 
+/** Env var that repoints the cross-harness Agent Skills root. Primarily tests. */
+export const AGENT_SKILLS_ENV = "AGENT_SKILLS_HOME"
+
+/**
+ * The cross-harness Agent Skills directory — `~/.agents/skills`.
+ *
+ * The de-facto standard location several agent harnesses already read, so a
+ * skill written once is visible to haxford alongside whichever tool taught
+ * it. Secondary to `~/.haxford/skills`: same-name skills there win.
+ */
+export function agentSkillsDir(): string {
+  const override = process.env[AGENT_SKILLS_ENV]?.trim()
+  if (override !== undefined && override.length > 0) return override
+  return path.join(process.env["HOME"] ?? "~", ".agents", "skills")
+}
+
 /** `~/.haxford/skills` — one directory per skill, each holding a SKILL.md. */
 export function skillsDir(): string {
   return path.join(haxfordHome(), "skills")
@@ -35,7 +51,17 @@ export function themesDir(): string {
   return path.join(haxfordHome(), "themes")
 }
 
-/** `~/.haxford/EXTENDING.md` — the API doc, written once and never overwritten. */
+/** `~/.haxford/EXTENDING.md` — the self-documenting extension guide. */
 export function extendingDocPath(): string {
   return path.join(haxfordHome(), "EXTENDING.md")
+}
+
+/**
+ * `~/.haxford/init.md` — global context loaded at the start of every
+ * session, in every project. The user's standing instructions to the agent:
+ * conventions, tone, recurring tasks. Loaded before any project-level file
+ * so the prefix stays stable across directories (prompt-cache friendly).
+ */
+export function initContextPath(): string {
+  return path.join(haxfordHome(), "init.md")
 }

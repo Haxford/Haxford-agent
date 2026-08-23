@@ -13,7 +13,7 @@ import type { Dirent } from "node:fs"
 import { readdir } from "node:fs/promises"
 import path from "node:path"
 
-import { skillsDir } from "./paths.ts"
+import { agentSkillsDir, skillsDir } from "./paths.ts"
 
 /** The file a skill directory must contain to count as a skill. */
 export const SKILL_FILE = "SKILL.md"
@@ -161,7 +161,13 @@ export function stripFrontmatter(text: string): string {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Rescan the skills directory and replace the index.
+ * Rescan the skills directories and replace the index.
+ *
+ * Two roots are scanned: the primary `~/.haxford/skills`, then — when no
+ * explicit `dir` was passed — the cross-harness Agent Skills directory
+ * (`~/.agents/skills`). A name that exists in both resolves to the primary
+ * copy, with a warning, so a user's haxford-specific rewrite of a shared
+ * skill always wins over the ecosystem version.
  *
  * A missing directory is not an error — most users have no skills — and a
  * skill that cannot be read is reported as a warning and skipped rather than
@@ -170,43 +176,55 @@ export function stripFrontmatter(text: string): string {
  */
 export async function scanSkills(
   dir: string = skillsDir(),
+  extraDirs: string[] = dir === skillsDir() ? [agentSkillsDir()] : [],
 ): Promise<{ skills: SkillSummary[]; warnings: string[] }> {
   const warnings: string[] = []
-  let entries: Dirent[]
-
-  try {
-    entries = await readdir(dir, { withFileTypes: true })
-  } catch {
-    // No skills directory at all: an empty index, silently.
-    index = []
-    return { skills: [], warnings }
-  }
-
   const found: SkillSummary[] = []
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    if (entry.name.startsWith(".")) continue
+  const owner = new Map<string, string>()
 
-    const file = path.join(dir, entry.name, SKILL_FILE)
-    const handle = Bun.file(file)
-    if (!(await handle.exists())) continue
-
-    let head: string
+  for (const [i, root] of [dir, ...extraDirs].entries()) {
+    let entries: Dirent[]
     try {
-      head = await handle.slice(0, FRONTMATTER_BYTES).text()
-    } catch (error) {
-      warnings.push(
-        `skill ${JSON.stringify(entry.name)}: could not read ${SKILL_FILE} (${errorText(error)})`,
-      )
+      entries = await readdir(root, { withFileTypes: true })
+    } catch {
+      // No skills directory at all: nothing to add from this root.
       continue
     }
 
-    const front = parseFrontmatter(head)
-    found.push({
-      name: front.name ?? entry.name,
-      description: front.description ?? "",
-      path: file,
-    })
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (entry.name.startsWith(".")) continue
+
+      const file = path.join(root, entry.name, SKILL_FILE)
+      const handle = Bun.file(file)
+      if (!(await handle.exists())) continue
+
+      let head: string
+      try {
+        head = await handle.slice(0, FRONTMATTER_BYTES).text()
+      } catch (error) {
+        warnings.push(
+          `skill ${JSON.stringify(entry.name)}: could not read ${SKILL_FILE} (${errorText(error)})`,
+        )
+        continue
+      }
+
+      const front = parseFrontmatter(head)
+      const name = front.name ?? entry.name
+      // First root to claim a name owns it; later roots only warn.
+      if (owner.has(name)) {
+        warnings.push(
+          `skill ${JSON.stringify(name)} from ${root} shadowed by ${owner.get(name)}`,
+        )
+        continue
+      }
+      owner.set(name, root)
+      found.push({
+        name,
+        description: front.description ?? "",
+        path: file,
+      })
+    }
   }
 
   // Stable order so the prompt's skills block is byte-identical between
