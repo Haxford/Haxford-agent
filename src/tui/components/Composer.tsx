@@ -166,13 +166,17 @@ export function Composer({
     if (disabled) return
 
     if (popupActive) {
+      // Popup-priority keys only. Everything else falls through to the editor
+      // below: while the popup is up the input line stays live and feeds the
+      // filter (via onValueChange), exactly like pi's TUI — the popup never
+      // captures plain typing. Backspace shrinks the filter, and editing past
+      // the last match closes the popup in the app (matches empty).
       if (key.upArrow) { onPopupNavigate?.("up"); return }
       if (key.downArrow) { onPopupNavigate?.("down"); return }
       if (key.tab) { onPopupAccept?.(); return }
       if (key.escape) { onPopupDismiss?.(); return }
       // Enter while popup is active accepts the suggestion rather than submitting.
       if (key.return) { onPopupAccept?.(); return }
-      return
     }
 
     const current = editorRef.current
