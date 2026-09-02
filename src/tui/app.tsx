@@ -436,15 +436,24 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     [composerValue],
   )
   const [acCursor, setAcCursor] = useState(0)
+  // Esc-dismissal (pi's model): the popup closes but the typed text stands,
+  // and the very next keystroke re-arms filtering. A flag rather than editing
+  // the value, because the popup is derived from the value — touching the
+  // text to close a view would be the popup eating the input.
+  const [acDismissed, setAcDismissed] = useState(false)
   // Imperative handle into the composer so completions/clears reach the real
   // (uncontrolled) TextInput instead of only the matching state.
   const composerRef = useRef<ComposerHandle | undefined>(undefined)
   // Exact single match (user typed a full command) => popup yields Enter back
   // to normal submission; otherwise typing "/e" + enter would instantly exit.
-  const acActive = acMatches.length > 0 && !isExactCommandMatch(acMatches, composerValue)
+  const acVisible = acMatches.length > 0 && !acDismissed
+  const acActive = acVisible && !isExactCommandMatch(acMatches, composerValue)
 
-  // Reset the popup cursor when the typed value changes.
-  useEffect(() => { setAcCursor(0) }, [composerValue])
+  // Reset the popup cursor and re-arm filtering whenever the typed value changes.
+  useEffect(() => {
+    setAcCursor(0)
+    setAcDismissed(false)
+  }, [composerValue])
 
   // While the sessions picker is open, load sessions lazily once.
   useEffect(() => {
@@ -545,8 +554,11 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     // The /connect dialog is modal while open — it owns its own keystrokes.
     if (ui.showConnect) return
     // Esc while the loop is running signals abort (host owns AbortController).
-    // Read live status from the store to avoid any closure staleness.
-    if (key.escape && store.getState().status === "running") {
+    // Read live status from the store to avoid any closure staleness. While
+    // the slash popup is up, Esc means "dismiss the popup" (the Composer
+    // routes it there) — aborting on the same keypress would make Esc do two
+    // things at once; the next Esc, with the popup closed, aborts.
+    if (key.escape && store.getState().status === "running" && !acActive) {
       onAbort()
       return
     }
@@ -572,11 +584,9 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
     if (key.ctrl && input === "o") {
       const next = store.setToolsExpanded(!store.getState().toolsExpanded)
       showHint(next ? "tool output expanded" : "tool output collapsed")
-      // @inkjs/ui's TextInput filters exactly one chord out of its own input
-      // handler — ctrl+c — and inserts everything else as a character, so a
-      // bare ctrl+o would leave a stray "o" in the composer. Reseeding with
-      // the value the composer already had remounts the input and drops it.
-      composerRef.current?.set(composerValue)
+      // No composer reseed needed here: the controlled Composer filters
+      // ctrl/meta chords out of the buffer itself (see Composer.tsx), so a
+      // bare ctrl+o can no longer leak a stray character into the input.
       return
     }
     if (key.tab && !running && composerValue.trim().length === 0 && !acActive && ui.showSessions.kind === "idle" && !ui.showHelp && !ui.showModelPicker && !ui.showConnect && ui.showListing.kind === "idle") {
@@ -805,8 +815,9 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
   }, [acMatches.length])
 
   const onPopupDismiss = useCallback(() => {
-    // Clearing the leading slash is the natural way to dismiss; the Composer
-    // already routed Esc here, so reset the cursor and let the value stand.
+    // Hide the popup while leaving the text exactly as typed; typing resumes
+    // filtering on the next keystroke (the effect above clears the flag).
+    setAcDismissed(true)
     setAcCursor(0)
   }, [])
 
@@ -1104,7 +1115,7 @@ export function HaxfordApp(props: HaxfordAppProps): React.ReactElement {
           onPopupAccept={onPopupAccept}
           onPopupDismiss={onPopupDismiss}
           onPopQueued={() => store.popLastQueued()}
-          autocomplete={<SlashAutocomplete matches={acMatches} cursor={acCursor} />}
+          autocomplete={acVisible ? <SlashAutocomplete matches={acMatches} cursor={acCursor} /> : null}
         />
 
         {/* Where you are and what is answering, on the terminal's last row:
