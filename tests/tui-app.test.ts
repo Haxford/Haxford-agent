@@ -405,6 +405,87 @@ describe("autocomplete submission safety", () => {
   })
 })
 
+/* -------------------------------------------------------------------------- */
+/* Slash popup interaction: the input line stays live while the popup is up    */
+/* -------------------------------------------------------------------------- */
+
+/** The composer's own row: prompt glyph followed by the typed text. */
+function composerLine(frame: string): string {
+  const line = frame.split("\n").find((l) => l.includes("›"))
+  expect(line).toBeDefined()
+  return line ?? ""
+}
+
+describe("slash popup interaction (input stays live)", () => {
+  test("typing after '/' live-filters the popup and keeps editing", async () => {
+    const { inst } = mount()
+    inst.stdin.write("/c")
+    await flush()
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).toContain("connect or re-key a provider") // /connect row
+    expect(frame).toContain("compact the conversation now") // /compact row
+    expect(frame).toContain("start a fresh session") // /clear row
+    inst.stdin.write("l")
+    await flush()
+    // The keystroke reached the buffer (the old popup swallowed it) ...
+    expect(composerLine(inst.lastFrame() ?? "")).toContain("/cl")
+    // ... and the popup narrowed to the single live match.
+    const narrowed = inst.lastFrame() ?? ""
+    expect(narrowed).toContain("start a fresh session")
+    expect(narrowed).not.toContain("compact the conversation now")
+    expect(narrowed).not.toContain("connect or re-key a provider")
+    inst.unmount()
+  })
+
+  test("esc closes the popup, keeps the text, and the next keystroke re-arms it", async () => {
+    const { inst } = mount()
+    inst.stdin.write("/m")
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("switch the active model")
+    inst.stdin.write("\x1b")
+    await flush()
+    const frame = inst.lastFrame() ?? ""
+    expect(frame).not.toContain("switch the active model")
+    expect(composerLine(frame)).toContain("/m")
+    inst.stdin.write("o")
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("switch the active model")
+    inst.unmount()
+  })
+
+  test("enter accepts the highlighted command; the next enter runs it", async () => {
+    const { inst } = mount()
+    inst.stdin.write("/he")
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("show this help")
+    inst.stdin.write("\r") // accept -> "/help"
+    await flush()
+    expect(composerLine(inst.lastFrame() ?? "")).toContain("/help")
+    inst.stdin.write("\r") // exact match -> Enter submits, help panel opens
+    await flush()
+    // A help-table row the default frame never shows.
+    expect(inst.lastFrame() ?? "").toContain("/compact")
+    inst.unmount()
+  })
+
+  test("esc with the popup open while running dismisses it instead of aborting", async () => {
+    const { store, inst, calls } = mount()
+    store.dispatch({ type: "turn.start", turn: 1 })
+    await flush()
+    inst.stdin.write("/m")
+    await flush()
+    expect(inst.lastFrame() ?? "").toContain("switch the active model")
+    inst.stdin.write("\x1b") // popup open -> dismiss, do not abort the run
+    await flush()
+    expect(calls.abort).toBe(0)
+    expect(inst.lastFrame() ?? "").not.toContain("switch the active model")
+    inst.stdin.write("\x1b") // popup closed -> abort
+    await flush()
+    expect(calls.abort).toBe(1)
+    inst.unmount()
+  })
+})
+
 describe("ModelPicker two-level render", () => {
   // Level 1: connected providers listed; the active model's provider
   // is connected; unconnected catalog providers are dimmed.

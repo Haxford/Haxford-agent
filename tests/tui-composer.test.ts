@@ -253,6 +253,95 @@ describe("queue-pop still works", () => {
 })
 
 /* -------------------------------------------------------------------------- */
+/* popup mode keeps the input live (slash autocomplete)                        */
+/* -------------------------------------------------------------------------- */
+
+describe("popup mode keeps the input live", () => {
+  interface PopupMounted {
+    inst: ReturnType<typeof renderFixed>
+    values: string[]
+    submits: string[]
+    nav: string[]
+    counts: { accept: number; dismiss: number }
+  }
+
+  function mountPopup(): PopupMounted {
+    const values: string[] = []
+    const submits: string[] = []
+    const nav: string[] = []
+    const counts = { accept: 0, dismiss: 0 }
+    const inst = renderFixed(
+      React.createElement(Composer, {
+        disabled: false,
+        popupActive: true,
+        onSubmit: (v: string) => submits.push(v),
+        onValueChange: (v: string) => values.push(v),
+        onPopupNavigate: (d: "up" | "down") => nav.push(d),
+        onPopupAccept: () => { counts.accept++ },
+        onPopupDismiss: () => { counts.dismiss++ },
+      }),
+    )
+    return { inst, values, submits, nav, counts }
+  }
+
+  test("plain typing edits the buffer while the popup is up", async () => {
+    const { inst, values, submits } = mountPopup()
+    inst.stdin.write("he")
+    await flush()
+    expect(values.at(-1)).toBe("he")
+    expect(submits).toEqual([])
+    inst.unmount()
+  })
+
+  test("backspace edits the buffer while the popup is up", async () => {
+    const { inst, values } = mountPopup()
+    inst.stdin.write("help")
+    await flush()
+    inst.stdin.write("\x7f") // DEL — the physical Backspace byte
+    await flush()
+    expect(values.at(-1)).toBe("hel")
+    inst.unmount()
+  })
+
+  test("up/down navigate the popup instead of the buffer", async () => {
+    const { inst, values, nav } = mountPopup()
+    inst.stdin.write("he")
+    await flush()
+    inst.stdin.write("\x1b[A\x1b[B")
+    await flush()
+    expect(nav).toEqual(["up", "down"])
+    expect(values.at(-1)).toBe("he")
+    inst.unmount()
+  })
+
+  test("enter accepts instead of submitting", async () => {
+    const { inst, counts, submits, values } = mountPopup()
+    inst.stdin.write("he")
+    await flush()
+    inst.stdin.write("\r")
+    await flush()
+    expect(counts.accept).toBe(1)
+    expect(submits).toEqual([])
+    expect(values.at(-1)).toBe("he")
+    inst.unmount()
+  })
+
+  test("tab accepts and esc dismisses without touching the buffer", async () => {
+    const { inst, counts, values } = mountPopup()
+    inst.stdin.write("he")
+    await flush()
+    inst.stdin.write("\t")
+    await flush()
+    expect(counts.accept).toBe(1)
+    inst.stdin.write("\x1b")
+    await flush()
+    expect(counts.dismiss).toBe(1)
+    expect(values.at(-1)).toBe("he")
+    inst.unmount()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
 /* imperative handle + basic rendering (compatibility checks)                 */
 /* -------------------------------------------------------------------------- */
 
